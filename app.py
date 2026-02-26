@@ -30,7 +30,7 @@ logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
 st.set_page_config(
-    page_title="PDF·RAG",
+    page_title="VivoAssist RAG Demo",
     page_icon="📄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -359,7 +359,9 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
 .stButton > button:hover {{
   background-color:var(--accent) !important; color:#fff !important; border-color:var(--accent) !important;
 }}
-
+[data-testid="stChatMessage"] > div > div {{
+  padding: 0px 10px 0px 10px !important;
+}}
 [data-testid="stChatMessage"] {{ border-radius:10px; margin-bottom:6px; background-color:var(--panel); border:1px solid var(--border); }}
 [data-testid="stChatInput"] {{ background-color:var(--panel); border:2px solid var(--border) !important; border-radius:8px; }}
 [data-testid="stChatInput"] input {{ background-color:var(--panel); color:var(--text) !important; }}
@@ -370,7 +372,7 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
   background:var(--chip); border:1px solid var(--border);
   border-radius:20px; padding:4px 12px 4px 10px;
   font-family:'JetBrains Mono',monospace; font-size:11px;
-  color:var(--text); text-decoration:none; margin:3px 4px 3px 0; cursor:pointer; transition:all .14s;
+  color:var(--text); text-decoration:none; margin:3px 4px px 0; cursor:pointer; transition:all .14s;
 }}
 .source-pill:hover {{ background:var(--panel); border-color:var(--accent); color:var(--accent); }}
 .source-pill .dot {{ width:5px; height:5px; border-radius:50%; background:var(--accent); flex-shrink:0; }}
@@ -462,7 +464,7 @@ col_chat, col_pdf = st.columns([1, 1], gap="large")
 # LEFT — Chat
 # ══════════════════════════════════════════════════════════════════════════════
 with col_chat:
-    st.markdown("### 💬 Ask a question")
+    st.markdown("### Ask a question")
 
     for msg in st.session_state.messages:
         with st.chat_message(msg["role"]):
@@ -478,7 +480,7 @@ with col_chat:
                     ranges = mm.merge_consecutive_pages(pages)
                     fname  = mm.extract_filename_from_nodes(nodes)
 
-                    pills = '<div style="margin-top:8px;line-height:2.4;">'
+                    pills = '<div style="margin:8px 0px 8px 0px; display:grid; grid-auto-flow:column; grid-auto-columns:max-content; gap:4px;">'
                     for start, end in ranges:
                         label  = mm.format_page_range(start, end)
                         url    = get_viewer_url(fname, start)
