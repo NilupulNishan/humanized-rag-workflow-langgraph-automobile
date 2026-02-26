@@ -9,6 +9,7 @@ from llama_index.core.query_engine import RetrieverQueryEngine
 from config import settings
 from src.embeddings import EmbeddingsManager
 from src.storage_manager import StorageManager
+from src.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
@@ -26,23 +27,23 @@ class QueryResponse:
 class SmartRetriever:
     """
     Intelligent retrieval with auto-merging and metadata extraction.
-    
+
     Features:
     - Automatic docstore loading
     - Auto-merging when available
     - Structured responses
     - Comprehensive metadata
     """
-    
+
     def __init__(
-        self, 
-        collection_name: str, 
+        self,
+        collection_name: str,
         verbose: bool = False,
         similarity_top_k: int = None
     ):
         """
         Initialize retriever for a collection.
-        
+
         Args:
             collection_name: Name of collection to query
             verbose: Whether to show verbose logs
@@ -51,11 +52,11 @@ class SmartRetriever:
         self.collection_name = collection_name
         self.verbose = verbose
         self.similarity_top_k = similarity_top_k or settings.SIMILARITY_TOP_K
-        
+
         # Initialize components
         self.embeddings_manager = EmbeddingsManager()
         self.storage_manager = StorageManager()
-        
+
         # Load index
         try:
             self.index, self.storage_context, self.has_docstore = \
@@ -64,30 +65,33 @@ class SmartRetriever:
                     self.embeddings_manager.get_embed_model(),
                     enable_auto_merging=settings.ENABLE_AUTO_MERGING
                 )
-            
+
             mode = "auto-merging" if self.has_docstore else "standard"
             logger.info(f"SmartRetriever initialized ({mode}) for: {collection_name}")
-            
+
         except Exception as e:
             logger.error(f"Failed to initialize retriever: {e}")
             raise
-    
+
     def query(self, query_text: str, similarity_top_k: int = None) -> QueryResponse:
         """
         Query the collection and return structured response.
-        
+
         Args:
             query_text: The question or query
             similarity_top_k: Override default similarity_top_k
-            
+
         Returns:
             QueryResponse with answer and metadata
         """
         k = similarity_top_k or self.similarity_top_k
-        
+
         try:
             logger.info(f"Querying: {query_text[:100]}...")
-            
+
+            # Get prompt template from PromptManager
+            qa_prompt = PromptManager.get_qa_prompt()
+
             if self.has_docstore and settings.ENABLE_AUTO_MERGING:
                 # Use auto-merging retrieval
                 base_retriever = self.index.as_retriever(similarity_top_k=k)
@@ -97,28 +101,34 @@ class SmartRetriever:
                     verbose=self.verbose
                 )
                 query_engine = RetrieverQueryEngine.from_args(retriever)
+                query_engine.update_prompts(
+                    {"response_synthesizer:text_qa_template": qa_prompt}
+                )
             else:
                 # Use standard retrieval
                 query_engine = self.index.as_query_engine(
                     similarity_top_k=k,
                     verbose=self.verbose
                 )
-            
+                query_engine.update_prompts(
+                    {"response_synthesizer:text_qa_template": qa_prompt}
+                )
+
             # Execute query
             response = query_engine.query(query_text)
-            
+
             # Extract source nodes
             source_nodes = response.source_nodes if hasattr(response, 'source_nodes') else []
-            
+
             logger.info(f"  ✓ Retrieved {len(source_nodes)} source nodes")
-            
+
             return QueryResponse(
                 answer=str(response),
                 source_nodes=source_nodes,
                 collection_name=self.collection_name,
                 retrieval_successful=True
             )
-            
+
         except Exception as e:
             logger.error(f"Query failed: {e}")
             return QueryResponse(
@@ -132,94 +142,91 @@ class SmartRetriever:
 
 class MultiCollectionRetriever:
     """Retriever that searches across multiple collections."""
-    
+
     def __init__(
-        self, 
-        collection_names: List[str] = None, 
+        self,
+        collection_names: List[str] = None,
         verbose: bool = False
     ):
         """
         Initialize multi-collection retriever.
-        
+
         Args:
             collection_names: List of collections to search (None = all)
             verbose: Whether to show verbose logs
         """
         storage_manager = StorageManager()
-        
+
         if collection_names is None:
             collection_names = storage_manager.list_collections()
-        
+
         if not collection_names:
             raise ValueError("No collections available")
-        
+
         self.retrievers = {}
         for name in collection_names:
             try:
                 self.retrievers[name] = SmartRetriever(name, verbose=verbose)
             except Exception as e:
                 logger.warning(f"Failed to load collection {name}: {e}")
-        
+
         if not self.retrievers:
             raise ValueError("Failed to load any collections")
-        
+
         logger.info(f"MultiCollectionRetriever initialized with {len(self.retrievers)} collections")
-    
+
     def query_all(self, query_text: str) -> dict:
         """
         Query all collections.
-        
+
         Args:
             query_text: The question or query
-            
+
         Returns:
             Dictionary mapping collection names to QueryResponse objects
         """
         results = {}
-        
+
         for name, retriever in self.retrievers.items():
             results[name] = retriever.query(query_text)
-        
+
         return results
-    
+
     def query_best(self, query_text: str) -> QueryResponse:
         """
         Query all collections and return the best result.
-        
+
         Args:
             query_text: The question or query
-            
+
         Returns:
             Best QueryResponse (longest answer heuristic)
         """
         results = self.query_all(query_text)
-        
+
         # Filter successful results
         successful = {k: v for k, v in results.items() if v.retrieval_successful}
-        
+
         if not successful:
-            # Return first failed result
             return list(results.values())[0]
-        
+
         # Return longest answer (simple heuristic)
         best_collection = max(successful.keys(), key=lambda k: len(successful[k].answer))
-        
+
         return successful[best_collection]
 
 
 if __name__ == "__main__":
-    # Test retriever
     storage_manager = StorageManager()
     collections = storage_manager.list_collections()
-    
+
     print(f"Testing SmartRetriever:\n")
     print(f"Available collections: {collections}\n")
-    
+
     if collections:
-        # Test single collection
         retriever = SmartRetriever(collections[0], verbose=True)
         response = retriever.query("What is this document about?")
-        
+
         print(f"Response:")
         print(f"  Answer length: {len(response.answer)} chars")
         print(f"  Source nodes: {len(response.source_nodes)}")

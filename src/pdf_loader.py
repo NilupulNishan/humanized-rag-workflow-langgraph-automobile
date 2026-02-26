@@ -63,7 +63,7 @@ class PDFLoader:
             # Enhance each page document with complete metadata
             enhanced_docs = []
             for i, page_doc in enumerate(page_docs):
-                page_num = i + 1  # 1-indexed page numbers
+                page_num = i + 2  # 1-indexed page numbers
                 
                 # Create enhanced document with comprehensive metadata
                 enhanced_doc = Document(
