@@ -211,7 +211,6 @@ function startViewer() {{
     return;
   }}
 
-  // Use a blob URL for the worker to avoid CORS issues
   var workerCode = 'importScripts("https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js");';
   var workerBlob = new Blob([workerCode], {{ type: 'application/javascript' }});
   var workerUrl  = URL.createObjectURL(workerBlob);
@@ -491,15 +490,14 @@ col_chat, col_pdf = st.columns([1, 1], gap="large")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LEFT — Chat (fixed max-height + NO “messages under input” bug)
+# LEFT — Chat
 # ══════════════════════════════════════════════════════════════════════════════
 with col_chat:
     st.markdown("### Ask a question")
 
-    CHAT_HEIGHT = 650  # adjust 600–750
+    CHAT_HEIGHT = 650
     chat_area = st.container(height=CHAT_HEIGHT)
 
-    # Render history + create a placeholder at the bottom (INSIDE scroll area)
     with chat_area:
         for msg in st.session_state.messages:
             with st.chat_message(msg["role"]):
@@ -531,92 +529,109 @@ with col_chat:
 
         tail = st.empty()
 
-    # Input OUTSIDE scroll area
     query = st.chat_input("Ask anything about your PDFs…")
 
     if query:
-        # 1) save user message
         st.session_state.messages.append({"role": "user", "content": query})
 
-        # 2) render user + assistant “Searching…” INSIDE chat_area via tail
         with tail.container():
             with st.chat_message("user"):
                 st.markdown(query)
 
             with st.chat_message("assistant"):
-                with st.spinner("Searching…"):
-                    try:
-                        retriever = get_retriever(
-                            st.session_state.selected_collection)
-                        is_multi = isinstance(
-                            retriever, MultiCollectionRetriever)
-                        response = retriever.query_best(
-                            query) if is_multi else retriever.query(query)
-                        coll_label = response.collection_name if is_multi else st.session_state.selected_collection
+                try:
+                    retriever  = get_retriever(st.session_state.selected_collection)
+                    is_multi   = isinstance(retriever, MultiCollectionRetriever)
+                    coll_label = st.session_state.selected_collection
+
+                    if coll_label:
+                        st.markdown(
+                            f'<span class="coll-badge">📁 {coll_label}</span>',
+                            unsafe_allow_html=True,
+                        )
+
+                    if is_multi:
+                        # ── Multi-collection: blocking (no streaming yet) ──────
+                        with st.spinner("Searching across collections…"):
+                            response   = retriever.query_best(query)
+                            coll_label = response.collection_name
 
                         if response.retrieval_successful:
+                            st.markdown(response.answer)
                             answer = response.answer
-                            nodes = response.source_nodes
-
-                            if coll_label:
-                                st.markdown(
-                                    f'<span class="coll-badge">📁 {coll_label}</span>',
-                                    unsafe_allow_html=True,
-                                )
-                            st.markdown(answer)
-
-                            mm = MetadataManager()
-                            pages = mm.extract_pages_from_nodes(nodes)
-                            ranges = mm.merge_consecutive_pages(pages)
-                            fname = mm.extract_filename_from_nodes(nodes)
-
-                            if pages and fname:
-                                pills = '<div class="pills">'
-                                for start, end in ranges:
-                                    label = mm.format_page_range(start, end)
-                                    url = get_viewer_url(fname, start)
-                                    pills += (f'<a class="source-pill" href="{url}" target="_blank">'
-                                              f'<span class="dot"></span>{label}</a>')
-                                pills += "</div>"
-                                st.markdown(pills, unsafe_allow_html=True)
-
-                                if pdf_exists_on_disk(fname):
-                                    st.session_state.pdf_filename = fname
-                                    st.session_state.pdf_page = pages[0]
-                                else:
-                                    st.warning(
-                                        f"Source PDF `{fname}` not found in `{PDF_DIR}`. "
-                                        f"Available: {[f.name for f in PDF_DIR.glob('*.pdf')]}"
-                                    )
-                            elif pages and not fname:
-                                st.warning(
-                                    "Could not extract filename from source nodes.")
-
-                            # store assistant message
-                            st.session_state.messages.append(
-                                {
-                                    "role": "assistant",
-                                    "content": answer,
-                                    "nodes": nodes,
-                                    "collection": coll_label,
-                                }
-                            )
-                            st.session_state.query_count += 1
-
+                            nodes  = response.source_nodes
                         else:
                             err = response.error_message or "Unknown error"
                             st.error(f"Retrieval failed: {err}")
                             st.session_state.messages.append(
-                                {"role": "assistant",
-                                    "content": f"⚠️ {err}", "nodes": []}
+                                {"role": "assistant", "content": f"⚠️ {err}", "nodes": []}
                             )
+                            st.rerun()
 
-                    except Exception as e:
-                        logger.exception("Query error")
-                        st.error(f"Error: {e}")
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": f"⚠️ {e}", "nodes": []}
-                        )
+                    else:
+                        # ── Single collection: STREAMING ──────────────────────
+                        #
+                        # retriever.stream(query)
+                        #   → embed  (0ms cached / ~900ms cold)
+                        #   → vector search + merge (~200ms) — source_nodes ready
+                        #   → LLM starts generating
+                        # st.write_stream(result)
+                        #   → renders each token live as it arrives
+                        #   → returns full answer string when done
+                        # result.source_nodes
+                        #   → already populated, zero extra API call
+                        #
+                        result = retriever.stream(query)
+
+                        if result.failed:
+                            st.error("Retrieval failed")
+                            st.rerun()
+
+                        # Tokens render live; full string returned when done
+                        answer = st.write_stream(result)
+                        nodes  = result.source_nodes  # instant, no round trip
+
+                    # ── Source pills (same for both paths) ────────────────────
+                    mm     = MetadataManager()
+                    pages  = mm.extract_pages_from_nodes(nodes)
+                    ranges = mm.merge_consecutive_pages(pages)
+                    fname  = mm.extract_filename_from_nodes(nodes)
+
+                    if pages and fname:
+                        pills = '<div class="pills">'
+                        for start, end in ranges:
+                            label = mm.format_page_range(start, end)
+                            url   = get_viewer_url(fname, start)
+                            pills += (f'<a class="source-pill" href="{url}" target="_blank">'
+                                      f'<span class="dot"></span>{label}</a>')
+                        pills += "</div>"
+                        st.markdown(pills, unsafe_allow_html=True)
+
+                        if pdf_exists_on_disk(fname):
+                            st.session_state.pdf_filename = fname
+                            st.session_state.pdf_page     = pages[0]
+                        else:
+                            st.warning(
+                                f"Source PDF `{fname}` not found in `{PDF_DIR}`. "
+                                f"Available: {[f.name for f in PDF_DIR.glob('*.pdf')]}"
+                            )
+                    elif pages and not fname:
+                        st.warning("Could not extract filename from source nodes.")
+
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "nodes": nodes,
+                        "collection": coll_label,
+                    })
+                    st.session_state.query_count += 1
+
+                except Exception as e:
+                    logger.exception("Query error")
+                    st.error(f"Error: {e}")
+                    st.session_state.messages.append(
+                        {"role": "assistant", "content": f"⚠️ {e}", "nodes": []}
+                    )
 
         st.rerun()
 
@@ -628,7 +643,7 @@ with col_pdf:
     st.markdown("### 📄 Source document")
 
     fname = st.session_state.pdf_filename
-    page = int(st.session_state.pdf_page or 1)
+    page  = int(st.session_state.pdf_page or 1)
 
     if fname:
         col_info, col_jump = st.columns([3, 1])
@@ -658,7 +673,7 @@ with col_pdf:
         render_pdf_viewer_pdfjs(fname, page, height=720)
 
         viewer_url = get_viewer_url(fname, page)
-        raw_url = get_pdf_http_url(fname, page)
+        raw_url    = get_pdf_http_url(fname, page)
         st.markdown(
             f'<a href="{viewer_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
             f'color:var(--text);text-decoration:none;border:1px solid var(--border);'
