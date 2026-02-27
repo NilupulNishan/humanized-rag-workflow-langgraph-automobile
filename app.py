@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import sys
 import logging
-import base64
 from pathlib import Path
 from urllib.parse import quote
 
@@ -37,13 +36,16 @@ st.set_page_config(
 )
 
 # ─── Start pdf_server ─────────────────────────────────────────────────────────
+
+
 @st.cache_resource
 def _boot_pdf_server():
     start_server_background()
 
+
 _boot_pdf_server()
 
-PDF_DIR       = PROJECT_ROOT / "data" / "pdfs"
+PDF_DIR = PROJECT_ROOT / "data" / "pdfs"
 PDF_HTTP_BASE = "http://localhost:8000"
 
 
@@ -71,8 +73,7 @@ def get_pdf_http_url(filename: str, page: int) -> str:
 def render_pdf_viewer_pdfjs(filename: str, page: int, height: int = 720) -> None:
     """
     Renders PDF by injecting bytes directly as a JS Uint8Array literal.
-    This is the most reliable approach — no fetch(), no atob(), no CDN worker needed.
-    The PDF.js worker is inlined via workerSrc = false trick with a blob worker.
+    (No fetch(), no atob(), no cross-origin dependency.)
     """
     pdf_path = PDF_DIR / filename
     if not pdf_path.exists():
@@ -80,17 +81,14 @@ def render_pdf_viewer_pdfjs(filename: str, page: int, height: int = 720) -> None
         return
 
     raw_bytes = pdf_path.read_bytes()
-
-    # Encode as hex string — safer than byte list for very large files
-    # JS will decode it: avoids Python generating a 50MB comma-separated list
     hex_str = raw_bytes.hex()
 
-    v_bg     = "#f6f8ff"
-    v_bar    = "#ffffff"
-    v_text   = "#0b1b2b"
+    v_bg = "#f6f8ff"
+    v_bar = "#ffffff"
+    v_text = "#0b1b2b"
     v_border = "#cfe0ff"
-    v_btn    = "#f1f5ff"
-    v_btn_h  = "#e6eeff"
+    v_btn = "#f1f5ff"
+    v_btn_h = "#e6eeff"
     v_accent = "#2563eb"
 
     html = f"""
@@ -213,7 +211,7 @@ function startViewer() {{
     return;
   }}
 
-  // Use a blob URL for the worker to avoid CORS issues with CDN workers
+  // Use a blob URL for the worker to avoid CORS issues
   var workerCode = 'importScripts("https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js");';
   var workerBlob = new Blob([workerCode], {{ type: 'application/javascript' }});
   var workerUrl  = URL.createObjectURL(workerBlob);
@@ -285,7 +283,6 @@ function startViewer() {{
   }});
 }}
 
-// Try unpkg first, then jsdelivr as fallback
 loadScript(
   'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js',
   function() {{ startViewer(); }},
@@ -323,13 +320,13 @@ def get_retriever(collection_name: str | None):
 
 
 # ─── CSS ──────────────────────────────────────────────────────────────────────
-BG     = "#f6f8ff"
-SIDEBAR= "#ffffff"
-PANEL  = "#ffffff"
-TEXT   = "#0b1b2b"
+BG = "#f6f8ff"
+SIDEBAR = "#ffffff"
+PANEL = "#ffffff"
+TEXT = "#0b1b2b"
 BORDER = "#cfe0ff"
 ACCENT = "#2563eb"
-CHIP   = "#f1f5ff"
+CHIP = "#f1f5ff"
 
 st.markdown(f"""
 <style>
@@ -359,20 +356,35 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
 .stButton > button:hover {{
   background-color:var(--accent) !important; color:#fff !important; border-color:var(--accent) !important;
 }}
+
 [data-testid="stChatMessage"] > div > div {{
   padding: 0px 10px 0px 10px !important;
 }}
-[data-testid="stChatMessage"] {{ border-radius:10px; margin-bottom:6px; background-color:var(--panel); border:1px solid var(--border); }}
-[data-testid="stChatInput"] {{ background-color:var(--panel); border:2px solid var(--border) !important; border-radius:8px; }}
-[data-testid="stChatInput"] input {{ background-color:var(--panel); color:var(--text) !important; }}
-[data-testid="stChatInput"] input::placeholder {{ color:var(--text) !important; opacity:0.6; }}
+[data-testid="stChatMessage"] {{
+  border-radius:10px; margin-bottom:6px; background-color:var(--panel);
+  border:1px solid var(--border);
+}}
+[data-testid="stChatInput"] {{
+  background-color:var(--panel);
+  border:2px solid var(--border) !important;
+  border-radius:8px;
+}}
+[data-testid="stChatInput"] input {{
+  background-color:var(--panel);
+  color:var(--text) !important;
+}}
+[data-testid="stChatInput"] input::placeholder {{
+  color:var(--text) !important;
+  opacity:0.6;
+}}
 
 .source-pill {{
   display:inline-flex; align-items:center; gap:6px;
   background:var(--chip); border:1px solid var(--border);
   border-radius:20px; padding:4px 12px 4px 10px;
   font-family:'JetBrains Mono',monospace; font-size:11px;
-  color:var(--text); text-decoration:none; margin:3px 4px px 0; cursor:pointer; transition:all .14s;
+  color:var(--text); text-decoration:none;
+  margin:3px 4px 0 0; cursor:pointer; transition:all .14s;
 }}
 .source-pill:hover {{ background:var(--panel); border-color:var(--accent); color:var(--accent); }}
 .source-pill .dot {{ width:5px; height:5px; border-radius:50%; background:var(--accent); flex-shrink:0; }}
@@ -380,7 +392,8 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
 .coll-badge {{
   display:inline-block; background:var(--chip); border:1px solid var(--border);
   color:var(--text); font-family:'JetBrains Mono',monospace; font-size:10px;
-  padding:2px 8px; border-radius:4px; letter-spacing:.06em; text-transform:uppercase; margin-bottom:6px;
+  padding:2px 8px; border-radius:4px; letter-spacing:.06em;
+  text-transform:uppercase; margin-bottom:6px;
 }}
 
 .stat-row {{ display:flex; gap:8px; margin-bottom:14px; }}
@@ -389,18 +402,34 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
 .stat-label {{ font-size:9px; color:var(--text); letter-spacing:.06em; text-transform:uppercase; margin-top:3px; opacity:0.75; }}
 
 .empty-pdf {{
-  display:flex; flex-direction:column; align-items:center; justify-content:center; height:460px; gap:14px;
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  height:460px; gap:14px;
   color:var(--text); font-family:'JetBrains Mono',monospace; font-size:12px;
   letter-spacing:.05em; border:1px dashed var(--border); border-radius:12px; background:var(--panel);
 }}
 .empty-pdf .ei {{ font-size:40px; opacity:.5; }}
+
+.pills {{
+  margin-top: 10px;
+  margin-bottom: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}}
+
+.source-pill,
+.source-pill:visited,
+.source-pill:hover,
+.source-pill:active {{
+  text-decoration: none !important;
+}}
 </style>
 """, unsafe_allow_html=True)
 
 
 # ─── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("## PDF·RAG")
+    st.markdown("## VIVO ASSIST")
     st.markdown("---")
 
     collections = get_collections()
@@ -413,14 +442,14 @@ with st.sidebar:
     if st.session_state.selected_collection in collections:
         idx = collections.index(st.session_state.selected_collection) + 1
 
-    chosen   = st.selectbox("Collection", options, index=idx)
+    chosen = st.selectbox("Collection", options, index=idx)
     selected = None if chosen == "— All collections —" else chosen
 
     if selected != st.session_state.selected_collection:
         st.session_state.selected_collection = selected
-        st.session_state.messages     = []
+        st.session_state.messages = []
         st.session_state.pdf_filename = None
-        st.session_state.pdf_page     = 1
+        st.session_state.pdf_page = 1
         st.rerun()
 
     st.markdown("---")
@@ -443,10 +472,10 @@ with st.sidebar:
     st.markdown("---")
 
     if st.button("🗑  Clear chat", use_container_width=True):
-        st.session_state.messages     = []
+        st.session_state.messages = []
         st.session_state.pdf_filename = None
-        st.session_state.pdf_page     = 1
-        st.session_state.query_count  = 0
+        st.session_state.pdf_page = 1
+        st.session_state.query_count = 0
         st.rerun()
 
     st.markdown(f"""
@@ -460,99 +489,134 @@ with st.sidebar:
 # ─── Main columns ─────────────────────────────────────────────────────────────
 col_chat, col_pdf = st.columns([1, 1], gap="large")
 
+
 # ══════════════════════════════════════════════════════════════════════════════
-# LEFT — Chat
+# LEFT — Chat (fixed max-height + NO “messages under input” bug)
 # ══════════════════════════════════════════════════════════════════════════════
 with col_chat:
     st.markdown("### Ask a question")
 
-    for msg in st.session_state.messages:
-        with st.chat_message(msg["role"]):
-            if msg["role"] == "assistant":
-                if msg.get("collection"):
-                    st.markdown(f'<span class="coll-badge">📁 {msg["collection"]}</span>', unsafe_allow_html=True)
-                st.markdown(msg["content"])
+    CHAT_HEIGHT = 650  # adjust 600–750
+    chat_area = st.container(height=CHAT_HEIGHT)
 
-                nodes = msg.get("nodes", [])
-                if nodes:
-                    mm     = MetadataManager()
-                    pages  = mm.extract_pages_from_nodes(nodes)
-                    ranges = mm.merge_consecutive_pages(pages)
-                    fname  = mm.extract_filename_from_nodes(nodes)
+    # Render history + create a placeholder at the bottom (INSIDE scroll area)
+    with chat_area:
+        for msg in st.session_state.messages:
+            with st.chat_message(msg["role"]):
+                if msg["role"] == "assistant":
+                    if msg.get("collection"):
+                        st.markdown(
+                            f'<span class="coll-badge">📁 {msg["collection"]}</span>',
+                            unsafe_allow_html=True,
+                        )
+                    st.markdown(msg["content"])
 
-                    pills = '<div style="margin:8px 0px 8px 0px; display:grid; grid-auto-flow:column; grid-auto-columns:max-content; gap:4px;">'
-                    for start, end in ranges:
-                        label  = mm.format_page_range(start, end)
-                        url    = get_viewer_url(fname, start)
-                        pills += (f'<a class="source-pill" href="{url}" target="_blank">'
-                                  f'<span class="dot"></span>{label}</a>')
-                    pills += "</div>"
-                    st.markdown(pills, unsafe_allow_html=True)
-            else:
-                st.markdown(msg["content"])
+                    nodes = msg.get("nodes", [])
+                    if nodes:
+                        mm = MetadataManager()
+                        pages = mm.extract_pages_from_nodes(nodes)
+                        ranges = mm.merge_consecutive_pages(pages)
+                        fname = mm.extract_filename_from_nodes(nodes)
 
+                        pills = '<div class="pills">'
+                        for start, end in ranges:
+                            label = mm.format_page_range(start, end)
+                            url = get_viewer_url(fname, start)
+                            pills += (f'<a class="source-pill" href="{url}" target="_blank">'
+                                      f'<span class="dot"></span>{label}</a>')
+                        pills += "</div>"
+                        st.markdown(pills, unsafe_allow_html=True)
+                else:
+                    st.markdown(msg["content"])
+
+        tail = st.empty()
+
+    # Input OUTSIDE scroll area
     query = st.chat_input("Ask anything about your PDFs…")
 
     if query:
+        # 1) save user message
         st.session_state.messages.append({"role": "user", "content": query})
-        with st.chat_message("user"):
-            st.markdown(query)
 
-        with st.chat_message("assistant"):
-            with st.spinner("Searching…"):
-                try:
-                    retriever  = get_retriever(st.session_state.selected_collection)
-                    is_multi   = isinstance(retriever, MultiCollectionRetriever)
-                    response   = retriever.query_best(query) if is_multi else retriever.query(query)
-                    coll_label = response.collection_name if is_multi else st.session_state.selected_collection
+        # 2) render user + assistant “Searching…” INSIDE chat_area via tail
+        with tail.container():
+            with st.chat_message("user"):
+                st.markdown(query)
 
-                    if response.retrieval_successful:
-                        answer = response.answer
-                        nodes  = response.source_nodes
+            with st.chat_message("assistant"):
+                with st.spinner("Searching…"):
+                    try:
+                        retriever = get_retriever(
+                            st.session_state.selected_collection)
+                        is_multi = isinstance(
+                            retriever, MultiCollectionRetriever)
+                        response = retriever.query_best(
+                            query) if is_multi else retriever.query(query)
+                        coll_label = response.collection_name if is_multi else st.session_state.selected_collection
 
-                        if coll_label:
-                            st.markdown(f'<span class="coll-badge">📁 {coll_label}</span>', unsafe_allow_html=True)
-                        st.markdown(answer)
+                        if response.retrieval_successful:
+                            answer = response.answer
+                            nodes = response.source_nodes
 
-                        mm     = MetadataManager()
-                        pages  = mm.extract_pages_from_nodes(nodes)
-                        ranges = mm.merge_consecutive_pages(pages)
-                        fname  = mm.extract_filename_from_nodes(nodes)
-
-                        if pages and fname:
-                            pills = '<div style="margin-top:8px;line-height:2.4;">'
-                            for start, end in ranges:
-                                label  = mm.format_page_range(start, end)
-                                url    = get_viewer_url(fname, start)
-                                pills += (f'<a class="source-pill" href="{url}" target="_blank">'
-                                          f'<span class="dot"></span>{label}</a>')
-                            pills += "</div>"
-                            st.markdown(pills, unsafe_allow_html=True)
-
-                            if pdf_exists_on_disk(fname):
-                                st.session_state.pdf_filename = fname
-                                st.session_state.pdf_page     = pages[0]
-                            else:
-                                st.warning(
-                                    f"Source PDF `{fname}` not found in `{PDF_DIR}`. "
-                                    f"Available: {[f.name for f in PDF_DIR.glob('*.pdf')]}"
+                            if coll_label:
+                                st.markdown(
+                                    f'<span class="coll-badge">📁 {coll_label}</span>',
+                                    unsafe_allow_html=True,
                                 )
-                        elif pages and not fname:
-                            st.warning("Could not extract filename from source nodes.")
+                            st.markdown(answer)
 
+                            mm = MetadataManager()
+                            pages = mm.extract_pages_from_nodes(nodes)
+                            ranges = mm.merge_consecutive_pages(pages)
+                            fname = mm.extract_filename_from_nodes(nodes)
+
+                            if pages and fname:
+                                pills = '<div class="pills">'
+                                for start, end in ranges:
+                                    label = mm.format_page_range(start, end)
+                                    url = get_viewer_url(fname, start)
+                                    pills += (f'<a class="source-pill" href="{url}" target="_blank">'
+                                              f'<span class="dot"></span>{label}</a>')
+                                pills += "</div>"
+                                st.markdown(pills, unsafe_allow_html=True)
+
+                                if pdf_exists_on_disk(fname):
+                                    st.session_state.pdf_filename = fname
+                                    st.session_state.pdf_page = pages[0]
+                                else:
+                                    st.warning(
+                                        f"Source PDF `{fname}` not found in `{PDF_DIR}`. "
+                                        f"Available: {[f.name for f in PDF_DIR.glob('*.pdf')]}"
+                                    )
+                            elif pages and not fname:
+                                st.warning(
+                                    "Could not extract filename from source nodes.")
+
+                            # store assistant message
+                            st.session_state.messages.append(
+                                {
+                                    "role": "assistant",
+                                    "content": answer,
+                                    "nodes": nodes,
+                                    "collection": coll_label,
+                                }
+                            )
+                            st.session_state.query_count += 1
+
+                        else:
+                            err = response.error_message or "Unknown error"
+                            st.error(f"Retrieval failed: {err}")
+                            st.session_state.messages.append(
+                                {"role": "assistant",
+                                    "content": f"⚠️ {err}", "nodes": []}
+                            )
+
+                    except Exception as e:
+                        logger.exception("Query error")
+                        st.error(f"Error: {e}")
                         st.session_state.messages.append(
-                            {"role": "assistant", "content": answer, "nodes": nodes, "collection": coll_label}
+                            {"role": "assistant", "content": f"⚠️ {e}", "nodes": []}
                         )
-                        st.session_state.query_count += 1
-
-                    else:
-                        err = response.error_message or "Unknown error"
-                        st.error(f"Retrieval failed: {err}")
-                        st.session_state.messages.append({"role": "assistant", "content": f"⚠️ {err}", "nodes": []})
-
-                except Exception as e:
-                    logger.exception("Query error")
-                    st.error(f"Error: {e}")
 
         st.rerun()
 
@@ -564,7 +628,7 @@ with col_pdf:
     st.markdown("### 📄 Source document")
 
     fname = st.session_state.pdf_filename
-    page  = int(st.session_state.pdf_page or 1)
+    page = int(st.session_state.pdf_page or 1)
 
     if fname:
         col_info, col_jump = st.columns([3, 1])
@@ -580,7 +644,10 @@ with col_pdf:
 
         with col_jump:
             new_page = st.number_input(
-                "page", min_value=1, value=page, step=1,
+                "page",
+                min_value=1,
+                value=page,
+                step=1,
                 label_visibility="collapsed",
                 key=f"pjump_{fname}_{page}",
             )
@@ -591,7 +658,7 @@ with col_pdf:
         render_pdf_viewer_pdfjs(fname, page, height=720)
 
         viewer_url = get_viewer_url(fname, page)
-        raw_url    = get_pdf_http_url(fname, page)
+        raw_url = get_pdf_http_url(fname, page)
         st.markdown(
             f'<a href="{viewer_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
             f'color:var(--text);text-decoration:none;border:1px solid var(--border);'
