@@ -435,13 +435,26 @@ header[data-testid="stHeader"] {{ background:transparent !important; }}
 .empty-pdf .ei {{ font-size:40px; opacity:.5; }}
 
 div[data-testid="stHorizontalBlock"] .stButton > button {{
-            font-size: 9px !important;
-            padding: 1px 6px !important;
-            line-height: 1.4 !important;
-            min-height: 0px !important;
-            height: auto !important;
-            border-radius: 20px !important;
-        }}
+    font-size: 5px !important;
+    padding: 4px 6px !important;
+    line-height: 1.1 !important;
+    min-height: 0px !important;
+    height: auto !important;
+    border-radius: 25px !important;
+
+    background-color: #f2f6ff !important;   
+    color: #000000 !important;               
+    border: 1px solid #5682e8!important;   
+}}
+
+div[data-testid="stHorizontalBlock"] .stButton > button:hover {{
+    background-color: #5682e8!important;   
+    color: #ffffff !important;
+    border-color: #5682e8 !important;
+}}
+div[data-testid="stHorizontalBlock"] .stButton > button div {{
+    font-size: 12px !important;
+}}
 </style>
 """,
     unsafe_allow_html=True,
