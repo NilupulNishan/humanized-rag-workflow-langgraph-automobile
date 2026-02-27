@@ -1,5 +1,5 @@
 """
-retriever_optimized.py
+retriever (optimized)
 
 Targets:
   Query 1 (cold):   ~4.5s  (embed unavoidable, LLM streamed so feels instant)
@@ -10,11 +10,12 @@ Key changes vs original:
   2. Streaming LLM         — user sees output in ~400ms not 4s
   3. top_k = 4             — was 12, cuts vector_search + llm context size
   4. Auto-merge bug fix    — don't run retrieval pipeline twice
+  5. PromptManager         — system prompt injected into every query engine
 """
 import hashlib
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Iterator, Dict
+from typing import List, Optional, Dict
 
 from llama_index.core.retrievers import AutoMergingRetriever
 from llama_index.core.query_engine import RetrieverQueryEngine
@@ -25,6 +26,10 @@ from src.prompt_manager import PromptManager
 
 logger = logging.getLogger(__name__)
 
+# Prompt is built once at module load — same instance reused for every query
+_QA_PROMPT = PromptManager.get_qa_prompt()
+_QA_TEMPLATE_KEY = "response_synthesizer:text_qa_template"
+
 
 # ─── StreamResult ─────────────────────────────────────────────────────────────
 
@@ -34,13 +39,6 @@ class StreamResult:
 
     Lets you iterate tokens AND read source_nodes from one object,
     with zero extra API calls.
-
-    How it works:
-      LlamaIndex StreamingResponse holds a response_gen generator
-      AND a source_nodes list. The source_nodes are populated by
-      the retrieval step which runs BEFORE generation starts.
-      So they're available immediately — no need to wait for the
-      stream to finish, and no second round trip needed.
 
     Timeline:
       retriever.stream(q) called
@@ -54,30 +52,20 @@ class StreamResult:
     def __init__(self, streaming_response, error: str = None):
         self._response = streaming_response
         self._error = error
-        self._tokens_consumed = False
 
     def __iter__(self):
-        """Iterate over LLM tokens as they stream."""
         if self._error:
             yield f"\n[Error: {self._error}]"
             return
-
         if self._response is None:
             return
-
         try:
             yield from self._response.response_gen
-            self._tokens_consumed = True
         except Exception as e:
             yield f"\n[Stream error: {e}]"
 
     @property
     def source_nodes(self) -> List:
-        """
-        Source nodes from the retrieval step.
-        Available immediately — does NOT require stream to be consumed first.
-        No extra API call.
-        """
         if self._response is None:
             return []
         return getattr(self._response, 'source_nodes', [])
@@ -108,7 +96,6 @@ class EmbeddingCache:
         self._misses = 0
 
     def _key(self, text: str) -> str:
-        # Normalize so "Reset device" and "reset device" share same slot
         return hashlib.md5(text.strip().lower().encode()).hexdigest()
 
     def get(self, text: str) -> Optional[List[float]]:
@@ -131,7 +118,6 @@ class EmbeddingCache:
         return f"hits={self._hits} misses={self._misses} ratio={ratio:.0f}%"
 
 
-# One shared cache for the whole process lifetime
 _embedding_cache = EmbeddingCache(max_size=500)
 
 
@@ -159,10 +145,6 @@ class SmartRetriever:
     ):
         self.collection_name = collection_name
         self.verbose = verbose
-
-        # top_k=4 instead of 12:
-        #   vector_search: 12 results → 4  saves ~0.3s
-        #   llm context:   6144 tokens → 2048  saves ~1-2s synthesis
         self.similarity_top_k = similarity_top_k or 4
 
         self._embeddings_manager = EmbeddingsManager()
@@ -180,7 +162,6 @@ class SmartRetriever:
         logger.info(f"SmartRetriever ready [{mode}] top_k={self.similarity_top_k}: {collection_name}")
 
     def _embed(self, text: str) -> List[float]:
-        """Get embedding, cache first."""
         cached = _embedding_cache.get(text)
         if cached is not None:
             logger.debug(f"Embed cache HIT — {_embedding_cache.stats}")
@@ -193,7 +174,12 @@ class SmartRetriever:
         return vec
 
     def _engine(self, streaming: bool = False) -> RetrieverQueryEngine:
-        """Build query engine. No API calls."""
+        """
+        Build query engine and inject the system prompt.
+
+        update_prompts() replaces LlamaIndex's default QA template with
+        PromptManager.get_qa_prompt() — applied to every query, every time.
+        """
         kwargs = {"streaming": streaming} if streaming else {}
 
         if self.has_docstore and settings.ENABLE_AUTO_MERGING:
@@ -203,26 +189,26 @@ class SmartRetriever:
                 storage_context=self.storage_context,
                 verbose=self.verbose
             )
-            return RetrieverQueryEngine.from_args(retriever, **kwargs)
+            engine = RetrieverQueryEngine.from_args(retriever, **kwargs)
         else:
-            return self.index.as_query_engine(
+            engine = self.index.as_query_engine(
                 similarity_top_k=self.similarity_top_k,
                 verbose=self.verbose,
                 **kwargs
             )
 
+        engine.update_prompts({_QA_TEMPLATE_KEY: _QA_PROMPT})
+
+        return engine
+
     def query(self, query_text: str, similarity_top_k: int = None) -> QueryResponse:
-        """
-        Blocking query. Returns complete answer.
-        Use stream() to hide the LLM wait time.
-        """
         if similarity_top_k:
             self.similarity_top_k = similarity_top_k
 
         from_cache = _embedding_cache.get(query_text) is not None
 
         try:
-            self._embed(query_text)  # populate cache for follow-up calls
+            self._embed(query_text)
             response = self._engine().query(query_text)
             source_nodes = getattr(response, 'source_nodes', [])
 
@@ -244,23 +230,8 @@ class SmartRetriever:
                 error_message=str(e)
             )
 
-    def stream(self, query_text: str) -> "StreamResult":
-        """
-        Streaming query.
-
-        Returns a StreamResult object — NOT a plain generator.
-        This lets you iterate tokens AND get source_nodes from
-        the same single Azure call, with no second round trip.
-
-        Usage:
-            result = retriever.stream(query)
-
-            for token in result:          # streams LLM tokens live
-                print(token, end="", flush=True)
-
-            nodes = result.source_nodes   # already populated, no extra call
-        """
-        self._embed(query_text)  # cache warmup
+    def stream(self, query_text: str) -> StreamResult:
+        self._embed(query_text)
 
         try:
             streaming_response = self._engine(streaming=True).query(query_text)
