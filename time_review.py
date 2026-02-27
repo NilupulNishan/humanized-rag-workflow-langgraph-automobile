@@ -175,8 +175,8 @@ if __name__ == "__main__":
     import sys
     from src.storage_manager import StorageManager
 
-    sm = StorageManager()
-    collections = sm.list_collections()
+    storage_manager = StorageManager()
+    collections = storage_manager.list_collections()
 
     if not collections:
         print("No collections found. Run process_pdfs.py first.")
