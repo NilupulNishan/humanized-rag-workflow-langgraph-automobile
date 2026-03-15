@@ -33,7 +33,32 @@ def memory_read_node(state: AgentState) -> dict[str, Any]:
     pass
 
 def memory_write_node(state: AgentState) -> dict[str, Any]:
-    pass
+    """
+    READ pass — called before retrieval.
+    Loads existing session from store and returns it into AgentState.
+    """
+    session_id = state.get("session_id", "default")
+    store = get_session_store()
+    session = store.get_or_create(session_id)
+
+    # Increment turn counter
+    session.turn_count += 1
+
+    #  Carry forward the current intent if analysis is available
+    analysis = state.get("analysis", {})
+    if analysis and analysis.get("intent"):
+        session.last_intent = analysis["intent"]
+
+    # Set collection from state if session doesn't have it yet
+    if not session.collection_name:
+        collection = state.get("collection_name")
+        if collection:
+            session.collection_name = collection
+
+    store.save(session_id, session)
+    logger.debug(f"memory_read: session {session_id} | turn {session.turn_count}")
+
+    return {"session": session}
 
 # helpers ------------------------------------------
 def _extract_model(text: str) -> str | None:
