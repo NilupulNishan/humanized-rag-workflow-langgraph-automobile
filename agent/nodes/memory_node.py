@@ -30,9 +30,6 @@ from agent.state import AgentState
 logger = logging.getLogger(__name__)
 
 def memory_read_node(state: AgentState) -> dict[str, Any]:
-    pass
-
-def memory_write_node(state: AgentState) -> dict[str, Any]:
     """
     READ pass — called before retrieval.
     Loads existing session from store and returns it into AgentState.
@@ -59,6 +56,75 @@ def memory_write_node(state: AgentState) -> dict[str, Any]:
     logger.debug(f"memory_read: session {session_id} | turn {session.turn_count}")
 
     return {"session": session}
+
+def memory_write_node(state: AgentState) -> dict[str, Any]:
+    """
+    WRITE pass — called after response is generated.
+    Extracts new facts from this turn and persists them.
+ 
+    Facts extracted:
+    - Product model (if mentioned by user or in retrieved content)
+    - Issue summary (from analysis.inferred_topic)
+    - Stage advancement (based on plan.mode)
+    - Steps attempted (from plan.steps — what we told user to try)
+    """
+    session_id = state.get("session_id", "default")
+    store = get_session_store()
+    session = store.get(session_id)
+
+    if not session:
+        logger.warning(f"memory_write: session {session_id} not found, skipping")
+        return {}
+    
+    user_input = state.get("user_input", "")
+    analysis = state.get("analysis", {})
+    plan = state.get("plan", {})
+
+    # ---- Extract product model from user input
+    # simple heuristic: look for model-like patterns
+    if not session.product_model:
+        model = _extract_model(user_input)
+        if model:
+            session.product_model = model
+            logger.debug(f"memory_write: detected model: {model}")
+
+    # --- Update issue summery from inferred topic
+    if not session.issue_summary and analysis.get("inferred_topic"):
+        topic = analysis["inferred_topic"]
+        if topic and topic.lower() != "unknown":
+            session.issue_summary = topic
+
+    # ---- Advance troubleshooting stage based on plan mode
+    plan_mode = plan.get("mode", "")
+    if plan_mode in ("troubleshoot", "step_by_step") and session.current_stage == "initial":
+        session.advance_stage("diagnosing")
+    elif  plan_mode == "escalated":
+        session.advance_stage("escalated")
+
+    # ---- Record steps we gave user (they'll attempt them)
+    steps = plan.get("steps") or []
+    for step in steps[:2]: # Record first 2 steps as "given to user"
+        # We don't mark them as "attempted" yet — user hasn't done them
+        # On the next turn, if user says "tried that", memory_read injects it
+        pass
+
+    # --- Parse "already tried" from user message
+    tried = _extract_tried_steps(user_input)
+    for step in tried:
+        session.mark_step_attempted(step)
+         
+    import datetime
+    session.last_active = datetime.datetime.utcnow()
+    store.save(session_id, session)
+
+    logger.debug(
+        f"memory_write: session {session_id} updated |"
+        f"stage={session.current_stage} | tried={session.attempted_steps}"
+    )
+
+    return {"session": session}
+    
+    
 
 # helpers ------------------------------------------
 def _extract_model(text: str) -> str | None:
