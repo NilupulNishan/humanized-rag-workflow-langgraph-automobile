@@ -50,7 +50,7 @@ cp .env.example .env
 # Edit with your credentials
 AZURE_OPENAI_API_KEY=your_api_key_here
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_CHAT_DEPLOYMENT=gpt-4o
+AZURE_GPT4O_DEPLOYMENT=gpt-4o
 AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 ```
 
@@ -217,7 +217,7 @@ All settings are in `.env`:
 # Azure OpenAI (Required)
 AZURE_OPENAI_API_KEY=your_api_key_here
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
-AZURE_CHAT_DEPLOYMENT=gpt-4o
+AZURE_GPT4O_DEPLOYMENT=gpt-4o
 AZURE_EMBEDDING_DEPLOYMENT=text-embedding-3-large
 
 # Embeddings

@@ -48,10 +48,10 @@ class EmbeddingsManager:
         # Initialize LLM
         self.llm = AzureOpenAI(
             model="gpt-4o",
-            deployment_name=settings.AZURE_CHAT_DEPLOYMENT,
+            deployment_name=settings.AZURE_GPT4O_DEPLOYMENT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_version=settings.OPENAI_API_VERSION,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
             temperature=0.1,
             http_client=_http_client, # ← persistent connection
             async_http_client=_async_http_client,
@@ -63,7 +63,7 @@ class EmbeddingsManager:
             deployment_name=settings.AZURE_EMBEDDING_DEPLOYMENT,
             api_key=settings.AZURE_OPENAI_API_KEY,
             azure_endpoint=settings.AZURE_OPENAI_ENDPOINT,
-            api_version=settings.OPENAI_API_VERSION,
+            api_version=settings.AZURE_OPENAI_API_VERSION,
             dimensions=settings.EMBEDDING_DIMENSIONS,
             http_client=_http_client,           # ← persistent connection
             async_http_client=_async_http_client,
