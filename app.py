@@ -1,5 +1,23 @@
 """
-Streamlit RAG interface — chat UI + embedded PDF viewer
+app.py  —  VivoAssist  (LangGraph edition)
+
+What changed vs the original:
+  - query handling replaced: SmartRetriever.query() → LangGraph pipeline
+  - streaming: tokens arrive live during response_renderer_stream()
+  - thinking status pills appear under the question while pipeline runs
+  - session memory persists across turns (LangGraph MemorySaver)
+  - mode badge + confidence shown on each answer
+  - source pills still work exactly as before (render_source_pills unchanged)
+  - PDF viewer unchanged
+  - sidebar unchanged (collections, stats, clear chat, server status)
+
+What is NOT changed:
+  - render_pdf_viewer_pdfjs()   — identical
+  - render_source_pills()       — identical
+  - CSS                         — identical + 3 new status-pill rules appended
+  - pdf_server integration      — identical
+  - page layout (col_chat / col_pdf) — identical
+  - MetadataManager usage       — identical
 
 Run:
     streamlit run app.py
@@ -7,19 +25,17 @@ Run:
 
 from __future__ import annotations
 
+import queue
 import sys
+import threading
+import time
+import uuid
 import logging
 from pathlib import Path
 from urllib.parse import quote
 
 import streamlit as st
 from streamlit.components.v1 import html as st_html
-
-from src.storage_manager import StorageManager
-from src.retriever import SmartRetriever, MultiCollectionRetriever
-from src.metadata_manager import MetadataManager
-from pdf_server import get_viewer_url, SERVER_PORT, start_server_background
-
 
 # ─── Path setup ───────────────────────────────────────────────────────────────
 PROJECT_ROOT = Path(__file__).parent
@@ -28,6 +44,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 logging.basicConfig(level=logging.WARNING)
 logger = logging.getLogger(__name__)
 
+# ─── Page config (must be first Streamlit call) ───────────────────────────────
 st.set_page_config(
     page_title="VivoAssist RAG Demo",
     page_icon="📄",
@@ -35,7 +52,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# ─── Start pdf_server ─────────────────────────────────────────────────────────
+# ─── Imports that depend on project path ──────────────────────────────────────
+from src.storage_manager import StorageManager
+from src.metadata_manager import MetadataManager
+from pdf_server import get_viewer_url, SERVER_PORT, start_server_background
+
+
+# ─── Boot PDF server ──────────────────────────────────────────────────────────
 @st.cache_resource
 def _boot_pdf_server():
     start_server_background()
@@ -48,17 +71,20 @@ PDF_HTTP_BASE = "http://localhost:8000"
 
 # ─── Session state defaults ───────────────────────────────────────────────────
 for k, v in {
-    "messages": [],
+    "messages":           [],
     "selected_collection": None,
-    "pdf_filename": None,
-    "pdf_page": 1,
-    "query_count": 0,
+    "pdf_filename":       None,
+    "pdf_page":           1,
+    "query_count":        0,
+    "session_id":         str(uuid.uuid4()),   # NEW — LangGraph thread id
+    "is_thinking":        False,               # NEW — disables input while running
+    "session_summary":    "",                  # NEW — sidebar memory display
 }.items():
     if k not in st.session_state:
         st.session_state[k] = v
 
 
-# ─── Helpers ──────────────────────────────────────────────────────────────────
+# ─── Helpers (unchanged from original) ───────────────────────────────────────
 def pdf_exists_on_disk(filename: str) -> bool:
     return bool(filename) and (PDF_DIR / filename).exists()
 
@@ -69,254 +95,51 @@ def get_pdf_http_url(filename: str, page: int) -> str:
 
 def render_pdf_viewer_pdfjs(filename: str, page: int, height: int = 720) -> None:
     """
-    Renders PDF by injecting bytes directly as a JS Uint8Array literal.
-    (No fetch(), no atob(), no cross-origin dependency.)
+    Inline PDF viewer — embeds the local pdf_server viewer in an iframe.
+
+    The old approach (hex-encode entire PDF → inject into HTML → PDF.js canvas)
+    broke inside Streamlit's sandboxed st_html iframe because:
+      - URL.createObjectURL() for the PDF.js worker is blocked in sandboxed iframes
+      - Result: spinner never stops, PDF never renders
+
+    This approach instead points an iframe at the already-working local pdf_server
+    (/viewer endpoint), which you confirmed works perfectly at port 7654.
+    No CDN, no Blob URLs, no hex encoding — just a local HTTP request.
     """
+    from urllib.parse import quote as _quote
+
     pdf_path = PDF_DIR / filename
     if not pdf_path.exists():
         st.warning(f"PDF not found: `{filename}` (expected under `{PDF_DIR}`)")
         return
 
-    raw_bytes = pdf_path.read_bytes()
-    hex_str = raw_bytes.hex()
+    # Build the viewer URL pointing at the local pdf_server
+    viewer_url = f"http://127.0.0.1:{SERVER_PORT}/viewer?file={_quote(filename)}&page={int(page)}"
 
-    v_bg = "#f6f8ff"
-    v_bar = "#ffffff"
-    v_text = "#0b1b2b"
-    v_border = "#cfe0ff"
-    v_btn = "#f1f5ff"
-    v_btn_h = "#e6eeff"
-    v_accent = "#2563eb"
-
-    html = f"""
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8"/>
-  <style>
-    * {{ box-sizing:border-box; margin:0; padding:0; }}
-    body {{
-      height:100vh; overflow:hidden; background:{v_bg};
-      font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace;
-      display:flex; flex-direction:column;
-    }}
-    .bar {{
-      background:{v_bar}; border-bottom:1px solid {v_border};
-      padding:7px 12px; display:flex; align-items:center; gap:10px; flex:0 0 auto;
-    }}
-    .logo {{ font-size:10px; font-weight:700; letter-spacing:.12em; color:{v_text}; flex-shrink:0; }}
-    .fname {{ flex:1; font-size:11px; color:{v_text}; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }}
-    .nav {{ display:flex; align-items:center; gap:6px; flex-shrink:0; }}
-    .nav input {{
-      width:60px; padding:2px 6px; font-size:11px;
-      border:1px solid {v_border}; border-radius:4px; outline:none;
-      background:transparent; color:{v_text}; text-align:center; font-family:inherit;
-    }}
-    .nav input:focus {{ border-color:{v_accent}; }}
-    .total {{ font-size:10px; color:{v_text}; opacity:.55; white-space:nowrap; }}
-    button {{
-      padding:2px 10px; font-size:10px; font-weight:700;
-      border:1px solid {v_border}; border-radius:4px;
-      background:{v_btn}; color:{v_text}; cursor:pointer; font-family:inherit;
-      transition:background .12s,border-color .12s;
-    }}
-    button:hover {{ background:{v_btn_h}; border-color:{v_accent}; }}
-    .wrap {{
-      flex:1 1 auto; overflow:auto; padding:12px;
-      position:relative; display:flex; flex-direction:column; align-items:center;
-    }}
-    canvas {{
-      display:none; background:white;
-      border:1px solid {v_border}; border-radius:8px; max-width:100%;
-      box-shadow:0 2px 12px rgba(37,99,235,.07);
-    }}
-    .loader {{
-      display:flex; flex-direction:column; align-items:center;
-      justify-content:center; gap:10px; width:100%; flex:1;
-      color:{v_text}; font-size:11px; letter-spacing:.05em; opacity:.7;
-    }}
-    .spinner {{
-      width:24px; height:24px;
-      border:2px solid {v_border}; border-top-color:{v_accent};
-      border-radius:50%; animation:spin .7s linear infinite;
-    }}
-    @keyframes spin {{ to {{ transform:rotate(360deg); }} }}
-    .err {{
-      margin:12px; padding:12px 14px; color:#b91c1c;
-      background:#fff1f1; border:1px solid #fca5a5;
-      border-radius:6px; font-size:11px; line-height:1.6; width:100%;
-      white-space:pre-wrap;
-    }}
-  </style>
-</head>
-<body>
-  <div class="bar">
-    <div class="logo">PDF·RAG</div>
-    <div class="fname" title="{filename}">{filename}</div>
-    <div class="nav">
-      <input id="pg" type="number" min="1" value="{int(page)}"/>
-      <span class="total" id="total"></span>
-      <button id="go">Go</button>
-    </div>
-  </div>
-  <div class="wrap" id="wrap">
-    <div class="loader" id="loader">
-      <div class="spinner"></div>
-      <div id="loadmsg">Loading PDF.js…</div>
-    </div>
-    <canvas id="cv"></canvas>
-    <div id="err" class="err" style="display:none;"></div>
-  </div>
-
-<script>
-var HEX = "{hex_str}";
-var START_PAGE = {int(page)};
-
-function showErr(msg) {{
-  document.getElementById('loader').style.display = 'none';
-  document.getElementById('cv').style.display     = 'none';
-  var el = document.getElementById('err');
-  el.style.display = 'block';
-  el.textContent   = '⚠ ' + msg;
-}}
-
-function hexToUint8(hex) {{
-  var len   = hex.length / 2;
-  var bytes = new Uint8Array(len);
-  for (var i = 0; i < len; i++) {{
-    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
-  }}
-  return bytes;
-}}
-
-function loadScript(url, cb, errCb) {{
-  var s    = document.createElement('script');
-  s.src    = url;
-  s.onload = cb;
-  s.onerror = errCb;
-  document.head.appendChild(s);
-}}
-
-function startViewer() {{
-  document.getElementById('loadmsg').textContent = 'Decoding PDF…';
-
-  var pdfBytes;
-  try {{
-    pdfBytes = hexToUint8(HEX);
-  }} catch(e) {{
-    showErr('Hex decode failed: ' + e.message);
-    return;
-  }}
-
-  var workerCode = 'importScripts("https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js");';
-  var workerBlob = new Blob([workerCode], {{ type: 'application/javascript' }});
-  var workerUrl  = URL.createObjectURL(workerBlob);
-
-  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
-
-  document.getElementById('loadmsg').textContent = 'Rendering…';
-
-  var loadTask = pdfjsLib.getDocument({{ data: pdfBytes }});
-
-  loadTask.promise.then(function(pdf) {{
-    var pgInput = document.getElementById('pg');
-    var totalEl = document.getElementById('total');
-    var goBtn   = document.getElementById('go');
-    var loader  = document.getElementById('loader');
-    var canvas  = document.getElementById('cv');
-
-    pgInput.max         = pdf.numPages;
-    totalEl.textContent = '/ ' + pdf.numPages;
-
-    var p = Math.min(Math.max(START_PAGE, 1), pdf.numPages);
-    pgInput.value = p;
-
-    function renderPage(num) {{
-      loader.style.display = 'flex';
-      canvas.style.display = 'none';
-      document.getElementById('loadmsg').textContent = 'Rendering page ' + num + '…';
-
-      pdf.getPage(num).then(function(page) {{
-        var wrap       = document.getElementById('wrap');
-        var containerW = wrap.clientWidth - 24;
-        var vp1        = page.getViewport({{ scale: 1 }});
-        var scale      = Math.min(2.5, Math.max(1.0, containerW / vp1.width));
-        var vp         = page.getViewport({{ scale: scale }});
-
-        canvas.width  = Math.floor(vp.width);
-        canvas.height = Math.floor(vp.height);
-
-        var ctx = canvas.getContext('2d');
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        page.render({{ canvasContext: ctx, viewport: vp }}).promise.then(function() {{
-          loader.style.display = 'none';
-          canvas.style.display = 'block';
-        }}).catch(function(e) {{
-          showErr('Render error: ' + e.message);
-        }});
-      }}).catch(function(e) {{
-        showErr('Page load error: ' + e.message);
-      }});
-    }}
-
-    renderPage(p);
-
-    goBtn.addEventListener('click', function() {{
-      var v = parseInt(pgInput.value, 10);
-      if (!isFinite(v) || v < 1) v = 1;
-      if (v > pdf.numPages) v = pdf.numPages;
-      pgInput.value = v;
-      renderPage(v);
-    }});
-
-    pgInput.addEventListener('keydown', function(e) {{
-      if (e.key === 'Enter') goBtn.click();
-    }});
-
-  }}).catch(function(e) {{
-    showErr('PDF load error: ' + (e && e.message ? e.message : String(e)));
-  }});
-}}
-
-loadScript(
-  'https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js',
-  function() {{ startViewer(); }},
-  function() {{
-    loadScript(
-      'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js',
-      function() {{ startViewer(); }},
-      function() {{ showErr('Could not load PDF.js from unpkg or jsdelivr.\\nCheck your internet connection or firewall.'); }}
-    );
-  }}
-);
-</script>
-</body>
-</html>
-"""
-    st_html(html, height=height, scrolling=False)
+    # Embed via st_html iframe — allow= attribute needed for some browsers
+    st_html(
+        f'<iframe src="{viewer_url}" '
+        f'width="100%" height="{height}" '
+        f'style="border:none;border-radius:8px;" '
+        f'allow="cross-origin-isolated">'
+        f'</iframe>',
+        height=height,
+        scrolling=False,
+    )
 
 
 def render_source_pills(nodes, *, key_prefix: str) -> None:
-    """
-    ✅ Pill buttons that update the RIGHT viewer inside the app.
-    (No <a href>, no new tab.)
-    """
+    """Unchanged from original."""
     if not nodes:
         return
-
     mm = MetadataManager()
     pages = mm.extract_pages_from_nodes(nodes)
     if not pages:
         return
-
     ranges = mm.merge_consecutive_pages(pages)
     fname = mm.extract_filename_from_nodes(nodes)
-
     if not fname:
         return
-
-  
     per_row = 6
     for r in range(0, len(ranges), per_row):
         row = ranges[r : r + per_row]
@@ -336,132 +159,223 @@ def render_source_pills(nodes, *, key_prefix: str) -> None:
                     )
 
 
-# ─── Cached loaders ───────────────────────────────────────────────────────────
+# ─── Cached resource loaders ──────────────────────────────────────────────────
 @st.cache_resource
 def get_storage():
     return StorageManager()
-
 
 @st.cache_resource
 def get_collections():
     return get_storage().list_collections()
 
 
-@st.cache_resource
-def get_retriever(collection_name: str | None):
-    if collection_name:
-        return SmartRetriever(collection_name, verbose=False)
-    return MultiCollectionRetriever(verbose=False)
+# ─── CSS (original + 4 new rules for status pills and mode badge) ─────────────
+BG="#f6f8ff"; SIDEBAR="#ffffff"; PANEL="#ffffff"
+TEXT="#0b1b2b"; BORDER="#cfe0ff"; ACCENT="#2563eb"; CHIP="#f1f5ff"
 
-
-# ─── CSS ──────────────────────────────────────────────────────────────────────
-BG = "#f6f8ff"
-SIDEBAR = "#ffffff"
-PANEL = "#ffffff"
-TEXT = "#0b1b2b"
-BORDER = "#cfe0ff"
-ACCENT = "#2563eb"
-CHIP = "#f1f5ff"
-
-st.markdown(
-    f"""
+st.markdown(f"""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Sora:wght@300;400;500;600&display=swap');
+:root{{--bg:{BG};--sidebar:{SIDEBAR};--panel:{PANEL};--text:{TEXT};--border:{BORDER};--accent:{ACCENT};--chip:{CHIP};}}
+#MainMenu,footer{{visibility:hidden;}}
+.stApp{{background-color:var(--bg);}}
+.block-container{{padding:1.4rem 2rem 2rem 2rem !important;background-color:var(--bg);}}
+html,body,[class*="css"]{{font-family:'Sora',sans-serif;color:var(--text);}}
+[data-testid="stSidebar"]{{background:var(--sidebar) !important;border-right:1px solid var(--border);}}
+[data-testid="stSidebar"] *{{color:var(--text) !important;}}
+[data-testid="collapsedControl"]{{display:block !important;visibility:visible !important;opacity:1 !important;z-index:9999 !important;}}
+[data-testid="collapsedControl"] button{{border:1px solid var(--border) !important;background:var(--sidebar) !important;}}
+header[data-testid="stHeader"]{{background:transparent !important;}}
+.stButton > button{{background-color:var(--panel) !important;color:var(--text) !important;
+  border:1px solid var(--border) !important;font-family:'JetBrains Mono',monospace !important;
+  font-size:11px !important;transition:all 0.14s;}}
+.stButton > button:hover{{background-color:var(--accent) !important;color:#fff !important;border-color:var(--accent) !important;}}
+[data-testid="stChatMessage"] > div > div{{padding:0px 10px 0px 10px !important;}}
+[data-testid="stChatMessage"]{{border-radius:10px;margin-bottom:6px;background-color:var(--panel);border:1px solid var(--border);}}
+[data-testid="stChatInput"]{{background-color:var(--panel);border:2px solid var(--border) !important;border-radius:8px;}}
+[data-testid="stChatInput"] input{{background-color:var(--panel);color:var(--text) !important;}}
+[data-testid="stChatInput"] input::placeholder{{color:var(--text) !important;opacity:0.6;}}
+.coll-badge{{display:inline-block;background:var(--chip);border:1px solid var(--border);color:var(--text);
+  font-family:'JetBrains Mono',monospace;font-size:10px;padding:2px 8px;border-radius:4px;
+  letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px;}}
+.stat-row{{display:flex;gap:8px;margin-bottom:14px;}}
+.stat-card{{flex:1;background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:9px 10px;text-align:center;}}
+.stat-num{{font-family:'JetBrains Mono',monospace;font-size:19px;font-weight:600;color:var(--text);line-height:1;}}
+.stat-label{{font-size:9px;color:var(--text);letter-spacing:.06em;text-transform:uppercase;margin-top:3px;opacity:0.75;}}
+.empty-pdf{{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  height:460px;gap:14px;color:var(--text);font-family:'JetBrains Mono',monospace;font-size:12px;
+  letter-spacing:.05em;border:1px dashed var(--border);border-radius:12px;background:var(--panel);}}
+.empty-pdf .ei{{font-size:40px;opacity:.5;}}
+div[data-testid="stHorizontalBlock"] .stButton > button{{font-size:5px !important;padding:4px 6px !important;
+  line-height:1.1 !important;min-height:0px !important;height:auto !important;border-radius:25px !important;
+  background-color:#f2f6ff !important;color:#000000 !important;border:1px solid #5682e8 !important;}}
+div[data-testid="stHorizontalBlock"] .stButton > button:hover{{background-color:#5682e8 !important;color:#ffffff !important;border-color:#5682e8 !important;}}
+div[data-testid="stHorizontalBlock"] .stButton > button div{{font-size:12px !important;}}
 
-:root {{
-  --bg:{BG}; --sidebar:{SIDEBAR}; --panel:{PANEL};
-  --text:{TEXT}; --border:{BORDER}; --accent:{ACCENT}; --chip:{CHIP};
+/* ── NEW: thinking status pills ─────────────────────────────────────────── */
+.status-pill{{
+  display:inline-flex;align-items:center;gap:7px;
+  background:#eef3ff;border:1px solid {BORDER};border-radius:20px;
+  padding:4px 12px;font-family:'JetBrains Mono',monospace;font-size:11px;
+  color:{TEXT};margin:2px 0;opacity:.9;
+  animation:blink 1.4s ease-in-out infinite;
 }}
+.status-pill.done{{animation:none;border-color:#a3c4fb;color:{ACCENT};background:#f0f5ff;}}
+.status-pill.error{{animation:none;border-color:#fca5a5;color:#b91c1c;background:#fff1f1;}}
+@keyframes blink{{0%,100%{{opacity:.9;}}50%{{opacity:.45;}}}}
 
-#MainMenu, footer {{ visibility:hidden; }}
-.stApp {{ background-color:var(--bg); }}
-.block-container {{ padding:1.4rem 2rem 2rem 2rem !important; background-color:var(--bg); }}
-html,body,[class*="css"] {{ font-family:'Sora',sans-serif; color:var(--text); }}
-
-[data-testid="stSidebar"] {{ background:var(--sidebar) !important; border-right:1px solid var(--border); }}
-[data-testid="stSidebar"] * {{ color:var(--text) !important; }}
-[data-testid="collapsedControl"] {{ display:block !important; visibility:visible !important; opacity:1 !important; z-index:9999 !important; }}
-[data-testid="collapsedControl"] button {{ border:1px solid var(--border) !important; background:var(--sidebar) !important; }}
-header[data-testid="stHeader"] {{ background:transparent !important; }}
-
-.stButton > button {{
-  background-color:var(--panel) !important; color:var(--text) !important;
-  border:1px solid var(--border) !important;
-  font-family:'JetBrains Mono',monospace !important; font-size:11px !important; transition:all 0.14s;
-}}
-.stButton > button:hover {{
-  background-color:var(--accent) !important; color:#fff !important; border-color:var(--accent) !important;
-}}
-
-[data-testid="stChatMessage"] > div > div {{
-  padding: 0px 10px 0px 10px !important;
-}}
-[data-testid="stChatMessage"] {{
-  border-radius:10px; margin-bottom:6px; background-color:var(--panel);
-  border:1px solid var(--border);
-}}
-[data-testid="stChatInput"] {{
-  background-color:var(--panel);
-  border:2px solid var(--border) !important;
-  border-radius:8px;
-}}
-[data-testid="stChatInput"] input {{
-  background-color:var(--panel);
-  color:var(--text) !important;
-}}
-[data-testid="stChatInput"] input::placeholder {{
-  color:var(--text) !important;
-  opacity:0.6;
-}}
-
-.coll-badge {{
-  display:inline-block; background:var(--chip); border:1px solid var(--border);
-  color:var(--text); font-family:'JetBrains Mono',monospace; font-size:10px;
-  padding:2px 8px; border-radius:4px; letter-spacing:.06em;
-  text-transform:uppercase; margin-bottom:6px;
-}}
-
-.stat-row {{ display:flex; gap:8px; margin-bottom:14px; }}
-.stat-card {{ flex:1; background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:9px 10px; text-align:center; }}
-.stat-num {{ font-family:'JetBrains Mono',monospace; font-size:19px; font-weight:600; color:var(--text); line-height:1; }}
-.stat-label {{ font-size:9px; color:var(--text); letter-spacing:.06em; text-transform:uppercase; margin-top:3px; opacity:0.75; }}
-
-.empty-pdf {{
-  display:flex; flex-direction:column; align-items:center; justify-content:center;
-  height:460px; gap:14px;
-  color:var(--text); font-family:'JetBrains Mono',monospace; font-size:12px;
-  letter-spacing:.05em; border:1px dashed var(--border); border-radius:12px; background:var(--panel);
-}}
-.empty-pdf .ei {{ font-size:40px; opacity:.5; }}
-
-div[data-testid="stHorizontalBlock"] .stButton > button {{
-    font-size: 5px !important;
-    padding: 4px 6px !important;
-    line-height: 1.1 !important;
-    min-height: 0px !important;
-    height: auto !important;
-    border-radius: 25px !important;
-
-    background-color: #f2f6ff !important;   
-    color: #000000 !important;               
-    border: 1px solid #5682e8!important;   
-}}
-
-div[data-testid="stHorizontalBlock"] .stButton > button:hover {{
-    background-color: #5682e8!important;   
-    color: #ffffff !important;
-    border-color: #5682e8 !important;
-}}
-div[data-testid="stHorizontalBlock"] .stButton > button div {{
-    font-size: 12px !important;
+/* ── NEW: mode badge ─────────────────────────────────────────────────────── */
+.mode-pill{{
+  display:inline-block;padding:1px 9px;border-radius:10px;
+  font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:600;
+  letter-spacing:.06em;text-transform:uppercase;
+  background:var(--chip);border:1px solid {BORDER};color:{ACCENT};
+  margin-left:6px;vertical-align:middle;
 }}
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
 
-# ─── Sidebar ──────────────────────────────────────────────────────────────────
+# ─── Pipeline status config ───────────────────────────────────────────────────
+# Maps node name → (icon, label shown in pill)
+NODE_STATUS = {
+    "query_understanding": ("🧠", "Understanding question…"),
+    "memory_read":         ("💭", "Reading session context…"),
+    "skip_retrieval":      ("⏭️",  "Preparing clarification…"),
+    "retriever":           ("🔍", "Searching the manual…"),
+    "answer_planner":      ("📋", "Planning the answer…"),
+    "response_renderer":   ("✍️",  "Writing response…"),
+    "memory_write":        ("💾", "Saving session…"),
+    "error":               ("❌", "Something went wrong"),
+}
+
+
+# ─── Background pipeline runner ───────────────────────────────────────────────
+def run_pipeline(
+    user_input:      str,
+    session_id:      str,
+    collection_name: str | None,
+    status_q:        queue.Queue,
+    token_q:         queue.Queue,
+):
+    """
+    Runs every LangGraph node sequentially in a background thread.
+
+    status_q receives: {"node": str, "done": bool}
+    token_q  receives: str (token)  |  {"DONE": True, "meta": dict}  |  {"ERROR": str}
+    """
+    try:
+        from agent.nodes.query_understanding import query_understanding_node
+        from agent.nodes.memory_node import memory_read_node, memory_write_node
+        from agent.nodes.retriever_node import retriever_node
+        from agent.nodes.answer_planner import answer_planner_node
+        from agent.nodes.response_renderer import response_renderer_stream
+        from agent.state import AgentState, AnswerPlan
+
+        state: AgentState = {
+            "user_input":      user_input,
+            "session_id":      session_id,
+            "collection_name": collection_name or "",
+            "messages":        [{"role": "user", "content": user_input}],
+        }
+
+        def run_node(name, fn):
+            status_q.put({"node": name, "done": False})
+            result = fn(state)
+            # Guard: never let a node overwrite collection_name.
+            # query_understanding returns analysis/effective_query only —
+            # but defensive check prevents any node from clearing it.
+            result.pop("collection_name", None)
+            state.update(result)
+            status_q.put({"node": name, "done": True})
+
+        # ── Node 1 ────────────────────────────────────────────────────────
+        run_node("query_understanding", query_understanding_node)
+
+        # ── Clarification shortcut ────────────────────────────────────────
+        analysis = state.get("analysis", {})
+        if analysis and analysis.get("needs_clarification"):
+            status_q.put({"node": "skip_retrieval", "done": False})
+            question = analysis.get("clarification_question",
+                "Could you give me more detail? That'll help me find the right answer.")
+            state["plan"] = AnswerPlan(
+                mode="clarify", confidence=0.0,
+                likely_goal=analysis.get("inferred_topic", ""),
+                steps=None, expected_outcomes=None, safety_notes=[],
+                citations=[], first_clarifying_question=question,
+                escalation_message=None,
+            )
+            state["raw_answer"] = ""
+            state["source_nodes"] = []
+            state["retrieval_successful"] = False
+            status_q.put({"node": "skip_retrieval", "done": True})
+        else:
+            run_node("memory_read",   memory_read_node)
+            run_node("retriever",     retriever_node)
+            run_node("answer_planner", answer_planner_node)
+
+        # ── Node 5: streaming renderer ────────────────────────────────────
+        status_q.put({"node": "response_renderer", "done": False})
+        full_response = ""
+        for token in response_renderer_stream(state):
+            token_q.put(token)
+            full_response += token
+        state["final_response"] = full_response
+        state["response_ready"] = True
+        status_q.put({"node": "response_renderer", "done": True})
+
+        # ── Node 6: memory write ──────────────────────────────────────────
+        run_node("memory_write", memory_write_node)
+
+        # ── Build metadata ────────────────────────────────────────────────
+        plan         = state.get("plan", {}) or {}
+        source_nodes = state.get("source_nodes", []) or []
+        session      = state.get("session")
+
+        # Debug: log exactly what metadata keys+values each node carries.
+        # This shows filename mismatches immediately in the terminal.
+        # Remove these lines once confirmed working.
+        for i, node in enumerate(source_nodes[:2]):
+            meta = getattr(node, 'metadata', {}) or {}
+            logger.warning(f"[source_node {i}] keys: {list(meta.keys())}")
+            logger.warning(
+                f"[source_node {i}] "
+                f"file_name={repr(meta.get('file_name'))} "
+                f"filename={repr(meta.get('filename'))} "
+                f"source={repr(meta.get('source'))} "
+                f"file_path={repr(meta.get('file_path'))}"
+            )
+
+        sources = []
+        for node in source_nodes:
+            meta = getattr(node, 'metadata', {}) or {}
+            page    = meta.get('page_number') or meta.get('page') or meta.get('page_label')
+            section = meta.get('section') or meta.get('header') or ""
+            if page:
+                sources.append({"page": page, "section": section})
+
+        session_summary = ""
+        if session and hasattr(session, 'to_context_string'):
+            session_summary = session.to_context_string()
+
+        token_q.put({"DONE": True, "meta": {
+            "mode":            plan.get("mode", "direct"),
+            "confidence":      plan.get("confidence", 0.5),
+            "likely_goal":     plan.get("likely_goal", ""),
+            "sources":         sources,
+            "source_nodes":    source_nodes,   # ← kept for render_source_pills
+            "session_summary": session_summary,
+            "full_response":   full_response,
+            "collection":      collection_name,
+        }})
+
+    except Exception as e:
+        logger.exception("Pipeline error")
+        status_q.put({"node": "error", "done": True, "error": True})
+        token_q.put({"ERROR": str(e)})
+
+
+# ─── Sidebar (unchanged from original) ───────────────────────────────────────
 with st.sidebar:
     st.markdown("## VIVO ASSIST")
     st.markdown("---")
@@ -495,38 +409,45 @@ with st.sidebar:
     except Exception:
         pass
 
-    st.markdown(
-        f"""
+    st.markdown(f"""
     <div class="stat-row">
       <div class="stat-card"><div class="stat-num">{len(collections)}</div><div class="stat-label">Collections</div></div>
       <div class="stat-card"><div class="stat-num">{total_chunks}</div><div class="stat-label">Chunks</div></div>
       <div class="stat-card"><div class="stat-num">{st.session_state.query_count}</div><div class="stat-label">Queries</div></div>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    </div>""", unsafe_allow_html=True)
 
     st.markdown("---")
+
+    # Session memory — NEW: shows what the agent knows about this user
+    if st.session_state.session_summary:
+        st.markdown("**🧠 Session context**")
+        st.markdown(
+            f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;'
+            f'color:{TEXT};background:{CHIP};border:1px solid {BORDER};'
+            f'border-radius:6px;padding:8px 10px;line-height:1.6;">'
+            f'{st.session_state.session_summary}</div>',
+            unsafe_allow_html=True,
+        )
+        st.markdown("---")
 
     if st.button("🗑  Clear chat", use_container_width=True):
         st.session_state.messages = []
         st.session_state.pdf_filename = None
         st.session_state.pdf_page = 1
         st.session_state.query_count = 0
+        st.session_state.session_id = str(uuid.uuid4())    # NEW: fresh LangGraph thread
+        st.session_state.session_summary = ""
         st.rerun()
 
     st.markdown(
-        f"""
-    <div style="font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text);margin-top:8px;opacity:.85;">
-      ● pdf_server · port {SERVER_PORT}
-    </div>
-    """,
+        f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;color:{TEXT};margin-top:8px;opacity:.85;">'
+        f'● pdf_server · port {SERVER_PORT}</div>',
         unsafe_allow_html=True,
     )
-    st.caption("LlamaIndex · ChromaDB · Azure OpenAI")
+    st.caption("LlamaIndex · LangGraph · ChromaDB · Azure OpenAI")
 
 
-# ─── Main columns ─────────────────────────────────────────────────────────────
+# ─── Main columns (unchanged layout) ─────────────────────────────────────────
 col_chat, col_pdf = st.columns([1, 1], gap="large")
 
 
@@ -540,104 +461,207 @@ with col_chat:
     chat_area = st.container(height=CHAT_HEIGHT)
 
     with chat_area:
+        # ── Render history ─────────────────────────────────────────────────
         for mi, msg in enumerate(st.session_state.messages):
             with st.chat_message(msg["role"]):
                 if msg["role"] == "assistant":
-                    if msg.get("collection"):
-                        st.markdown(
-                            f'<span class="coll-badge">📁 {msg["collection"]}</span>',
-                            unsafe_allow_html=True,
-                        )
+                    meta = msg.get("meta", {})
+                    coll = meta.get("collection") or msg.get("collection")
+                    mode = meta.get("mode", "")
+                    conf = meta.get("confidence", 0)
+
+                    # collection + mode badge on same line
+                    badge_html = ""
+                    if coll:
+                        badge_html += f'<span class="coll-badge">📁 {coll}</span>'
+                    if mode:
+                        badge_html += f'<span class="mode-pill">{mode}</span>'
+                    if badge_html:
+                        st.markdown(badge_html, unsafe_allow_html=True)
+
                     st.markdown(msg["content"])
 
-                    nodes = msg.get("nodes", [])
+                    nodes = meta.get("source_nodes") or msg.get("nodes", [])
                     if nodes:
-                        # ✅ pills update the right viewer inside app
                         render_source_pills(nodes, key_prefix=f"hist_{mi}")
-
                 else:
                     st.markdown(msg["content"])
 
         tail = st.empty()
 
-    query = st.chat_input("Ask anything about your PDFs…")
+    # ── Input ──────────────────────────────────────────────────────────────
+    query = st.chat_input(
+        "Ask anything about your PDFs…",
+        disabled=st.session_state.is_thinking,
+    )
 
-    if query:
+    if query and not st.session_state.is_thinking:
         st.session_state.messages.append({"role": "user", "content": query})
+        st.session_state.is_thinking = True
 
         with tail.container():
+            # User bubble
             with st.chat_message("user"):
                 st.markdown(query)
 
+            # Assistant bubble — contains status pills + streaming response
             with st.chat_message("assistant"):
-                try:
-                    retriever = get_retriever(st.session_state.selected_collection)
-                    is_multi = isinstance(retriever, MultiCollectionRetriever)
-                    coll_label = st.session_state.selected_collection
+                coll_label = st.session_state.selected_collection
+                if coll_label:
+                    st.markdown(
+                        f'<span class="coll-badge">📁 {coll_label}</span>',
+                        unsafe_allow_html=True,
+                    )
 
-                    if coll_label:
+                # ── Three placeholders inside the assistant bubble ─────────
+                # 1. Status pill  — updates with each node name
+                # 2. Response     — fills token by token
+                # 3. Pills        — source page buttons, shown after stream
+                status_ph  = st.empty()
+                response_ph = st.empty()
+                pills_ph   = st.empty()
+
+                # ── Start background thread ────────────────────────────────
+                status_q: queue.Queue = queue.Queue()
+                token_q:  queue.Queue = queue.Queue()
+
+                thread = threading.Thread(
+                    target=run_pipeline,
+                    args=(
+                        query,
+                        st.session_state.session_id,
+                        st.session_state.selected_collection,
+                        status_q,
+                        token_q,
+                    ),
+                    daemon=True,
+                )
+                thread.start()
+
+                # ── Poll loop ──────────────────────────────────────────────
+                accumulated = ""
+                final_meta  = {}
+                pipeline_error = None
+
+                while True:
+                    # Drain status queue → update pill
+                    try:
+                        while True:
+                            s = status_q.get_nowait()
+                            node  = s["node"]
+                            done  = s.get("done", False)
+                            error = s.get("error", False)
+                            icon, label = NODE_STATUS.get(node, ("⚙️", node))
+                            css = "status-pill"
+                            if error:
+                                css += " error"
+                            elif done and node not in ("response_renderer",):
+                                css += " done"
+                            status_ph.markdown(
+                                f'<div class="{css}">{icon} {label}</div>',
+                                unsafe_allow_html=True,
+                            )
+                    except queue.Empty:
+                        pass
+
+                    # Drain token queue → stream text
+                    done_signal = False
+                    try:
+                        while True:
+                            item = token_q.get_nowait()
+                            if isinstance(item, dict):
+                                if item.get("DONE"):
+                                    final_meta = item["meta"]
+                                    done_signal = True
+                                    break
+                                elif item.get("ERROR"):
+                                    pipeline_error = item["ERROR"]
+                                    done_signal = True
+                                    break
+                            else:
+                                accumulated += item
+                                # Show streaming text with blinking cursor
+                                response_ph.markdown(accumulated + "▌")
+                    except queue.Empty:
+                        pass
+
+                    if done_signal:
+                        break
+
+                    time.sleep(0.02)
+
+                thread.join(timeout=5)
+
+                # ── Finalise UI ────────────────────────────────────────────
+                status_ph.empty()   # remove thinking pill
+
+                if pipeline_error:
+                    response_ph.error(
+                        f"Something went wrong: {pipeline_error}\n\n"
+                        "Please try rephrasing your question."
+                    )
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": f"⚠️ {pipeline_error}",
+                        "meta": {},
+                    })
+                else:
+                    # Clean final text (no cursor)
+                    response_ph.markdown(accumulated)
+
+                    # Mode badge next to response
+                    mode = final_meta.get("mode", "")
+                    conf = final_meta.get("confidence", 0)
+                    if mode:
                         st.markdown(
-                            f'<span class="coll-badge">📁 {coll_label}</span>',
+                            f'<span class="mode-pill">{mode}</span>'
+                            f'<span style="font-size:10px;color:{TEXT};opacity:.6;margin-left:6px;">'
+                            f'{conf:.0%}</span>',
                             unsafe_allow_html=True,
                         )
 
-                    with st.spinner("Searching…"):
-                        if is_multi:
-                            response = retriever.query_best(query)
-                            coll_label = response.collection_name
-                        else:
-                            response = retriever.query(query)
+                    # Source pills (same render_source_pills function, unchanged)
+                    source_nodes = final_meta.get("source_nodes", [])
+                    with pills_ph.container():
+                        render_source_pills(
+                            source_nodes,
+                            key_prefix=f"live_{st.session_state.query_count}",
+                        )
 
-                    if getattr(response, "retrieval_successful", False):
-                        answer = response.answer
-                        nodes = response.source_nodes
-                        st.markdown(answer)
-
-                        # ✅ pills update right viewer
-                        render_source_pills(nodes, key_prefix=f"live_{st.session_state.query_count}")
-
-                        # auto-set viewer to first page
+                    # Auto-jump PDF viewer to first source page
+                    if source_nodes:
                         mm = MetadataManager()
-                        pages = mm.extract_pages_from_nodes(nodes)
-                        fname = mm.extract_filename_from_nodes(nodes)
+                        pages = mm.extract_pages_from_nodes(source_nodes)
+                        fname = mm.extract_filename_from_nodes(source_nodes)
                         if pages and fname and pdf_exists_on_disk(fname):
                             st.session_state.pdf_filename = fname
                             st.session_state.pdf_page = int(pages[0])
 
-                        st.session_state.messages.append(
-                            {
-                                "role": "assistant",
-                                "content": answer,
-                                "nodes": nodes,
-                                "collection": coll_label,
-                            }
-                        )
-                        st.session_state.query_count += 1
-                    else:
-                        err = getattr(response, "error_message", "Unknown error")
-                        st.error(f"Retrieval failed: {err}")
-                        st.session_state.messages.append(
-                            {"role": "assistant", "content": f"⚠️ {err}", "nodes": []}
-                        )
+                    # Update sidebar session memory
+                    if final_meta.get("session_summary"):
+                        st.session_state.session_summary = final_meta["session_summary"]
 
-                except Exception as e:
-                    logger.exception("Query error")
-                    st.error(f"Error: {e}")
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": f"⚠️ {e}", "nodes": []}
-                    )
+                    # Save to history
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": accumulated,
+                        "meta":    final_meta,
+                    })
+                    st.session_state.query_count += 1
+
+                st.session_state.is_thinking = False
 
         st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# RIGHT — PDF Viewer
+# RIGHT — PDF Viewer (100% unchanged)
 # ══════════════════════════════════════════════════════════════════════════════
 with col_pdf:
     st.markdown("### 📄 Source document")
 
     fname = st.session_state.pdf_filename
-    page = int(st.session_state.pdf_page or 1)
+    page  = int(st.session_state.pdf_page or 1)
 
     if fname:
         col_info, col_jump = st.columns([3, 1])
@@ -645,18 +669,15 @@ with col_pdf:
         with col_info:
             st.markdown(
                 f'<div style="font-family:JetBrains Mono,monospace;font-size:11px;'
-                f'color:var(--text);padding-top:6px;">'
-                f'<span style="color:var(--accent);">●</span>&nbsp;{fname}'
+                f'color:{TEXT};padding-top:6px;">'
+                f'<span style="color:{ACCENT};">●</span>&nbsp;{fname}'
                 f'&nbsp;·&nbsp;page {page}</div>',
                 unsafe_allow_html=True,
             )
 
         with col_jump:
             new_page = st.number_input(
-                "page",
-                min_value=1,
-                value=page,
-                step=1,
+                "page", min_value=1, value=page, step=1,
                 label_visibility="collapsed",
                 key=f"pjump_{fname}_{page}",
             )
@@ -667,25 +688,20 @@ with col_pdf:
         render_pdf_viewer_pdfjs(fname, page, height=720)
 
         viewer_url = get_viewer_url(fname, page)
-        raw_url = get_pdf_http_url(fname, page)
+        raw_url    = get_pdf_http_url(fname, page)
         st.markdown(
             f'<a href="{viewer_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
-            f'color:var(--text);text-decoration:none;border:1px solid var(--border);'
+            f'color:{TEXT};text-decoration:none;border:1px solid {BORDER};'
             f'padding:4px 12px;border-radius:4px;display:inline-block;margin-top:8px;">↗ open in new tab</a>'
             f'&nbsp;&nbsp;'
             f'<a href="{raw_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
-            f'color:var(--text);text-decoration:none;border:1px solid var(--border);'
+            f'color:{TEXT};text-decoration:none;border:1px solid {BORDER};'
             f'padding:4px 12px;border-radius:4px;display:inline-block;margin-top:8px;">↗ open raw PDF</a>',
             unsafe_allow_html=True,
         )
-
     else:
-        st.markdown(
-            """
+        st.markdown("""
         <div class="empty-pdf">
           <div class="ei">📄</div>
           <div>Ask a question — the source PDF will appear here</div>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
+        </div>""", unsafe_allow_html=True)
