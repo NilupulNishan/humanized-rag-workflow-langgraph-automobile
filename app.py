@@ -24,6 +24,8 @@ Run:
 """
 
 from __future__ import annotations
+from src.metadata_manager import MetadataManager
+from src.storage_manager import StorageManager
 
 import queue
 import sys
@@ -53,20 +55,12 @@ st.set_page_config(
 )
 
 # ─── Imports that depend on project path ──────────────────────────────────────
-from src.storage_manager import StorageManager
-from src.metadata_manager import MetadataManager
-from pdf_server import get_viewer_url, SERVER_PORT, start_server_background
 
 
 # ─── Boot PDF server ──────────────────────────────────────────────────────────
-@st.cache_resource
-def _boot_pdf_server():
-    start_server_background()
 
-_boot_pdf_server()
 
 PDF_DIR = PROJECT_ROOT / "data" / "pdfs"
-PDF_HTTP_BASE = "http://localhost:8000"
 
 
 # ─── Session state defaults ───────────────────────────────────────────────────
@@ -89,43 +83,124 @@ def pdf_exists_on_disk(filename: str) -> bool:
     return bool(filename) and (PDF_DIR / filename).exists()
 
 
-def get_pdf_http_url(filename: str, page: int) -> str:
-    return f"{PDF_HTTP_BASE}/{quote(filename)}#page={int(page)}"
-
-
 def render_pdf_viewer_pdfjs(filename: str, page: int, height: int = 720) -> None:
     """
-    Inline PDF viewer — embeds the local pdf_server viewer in an iframe.
-
-    The old approach (hex-encode entire PDF → inject into HTML → PDF.js canvas)
-    broke inside Streamlit's sandboxed st_html iframe because:
-      - URL.createObjectURL() for the PDF.js worker is blocked in sandboxed iframes
-      - Result: spinner never stops, PDF never renders
-
-    This approach instead points an iframe at the already-working local pdf_server
-    (/viewer endpoint), which you confirmed works perfectly at port 7654.
-    No CDN, no Blob URLs, no hex encoding — just a local HTTP request.
+    Inline PDF viewer using PDF.js + raw bytes (NO iframe, NO server)
     """
-    from urllib.parse import quote as _quote
 
     pdf_path = PDF_DIR / filename
     if not pdf_path.exists():
         st.warning(f"PDF not found: `{filename}` (expected under `{PDF_DIR}`)")
         return
 
-    # Build the viewer URL pointing at the local pdf_server
-    viewer_url = f"http://127.0.0.1:{SERVER_PORT}/viewer?file={_quote(filename)}&page={int(page)}"
+    raw_bytes = pdf_path.read_bytes()
+    hex_str = raw_bytes.hex()
 
-    # Embed via st_html iframe — allow= attribute needed for some browsers
-    st_html(
-        f'<iframe src="{viewer_url}" '
-        f'width="100%" height="{height}" '
-        f'style="border:none;border-radius:8px;" '
-        f'allow="cross-origin-isolated">'
-        f'</iframe>',
-        height=height,
-        scrolling=False,
-    )
+    html = f"""
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+</head>
+<body>
+
+<div>{filename} · page {int(page)}</div>
+<div id="loader">Loading PDF…</div>
+<canvas id="cv"></canvas>
+<div id="err" style="color:red;font-size:12px;"></div>
+
+<script>
+var HEX = "{hex_str}";
+var START_PAGE = {int(page)};
+
+function showError(msg) {{{{
+  document.getElementById("loader").style.display = "none";
+  document.getElementById("err").innerText = "❌ " + msg;
+}}}}
+
+function hexToUint8(hex) {{{{
+  var len = hex.length / 2;
+  var bytes = new Uint8Array(len);
+  for (var i = 0; i < len; i++) {{{{
+    bytes[i] = parseInt(hex.substr(i * 2, 2), 16);
+  }}}}
+  return bytes;
+}}}}
+
+function loadScript(url, success, fail) {{{{
+  var s = document.createElement("script");
+  s.src = url;
+  s.onload = success;
+  s.onerror = fail;
+  document.head.appendChild(s);
+}}}}
+
+function start(pdfjsLib) {{{{
+        try {{{{
+            var pdfBytes = hexToUint8(HEX)
+
+            pdfjsLib.getDocument({{data: pdfBytes}}).promise.then(function(pdf) {{{{
+
+                var canvas= document.getElementById("cv")
+                var ctx = canvas.getContext("2d")
+
+                var p = Math.min(Math.max(START_PAGE, 1), pdf.numPages)
+
+                pdf.getPage(p).then(function(page) {{{{
+
+                    var containerWidth= document.body.clientWidth - 20
+                    var viewport= page.getViewport({{scale: 1}})
+                    var displayScale = containerWidth / viewport.width;
+                    var renderScale = displayScale * 2;  
+                    var renderViewport = page.getViewport({{ scale: renderScale }});
+                    canvas.width = Math.floor(renderViewport.width);
+                    canvas.height = Math.floor(renderViewport.height);
+                    canvas.style.width = Math.floor(containerWidth) + "px";
+                    canvas.style.height = "auto";
+                    ctx.clearRect(0, 0, canvas.width, canvas.height)
+                    page.render({{
+                        canvasContext: ctx,
+                        viewport: renderViewport
+                    }}).promise.then(function() {{{{
+                        document.getElementById("loader").style.display = "none"
+                    }}}}).catch(function(e) {{{{
+                        showError("Render error: " + e.message)
+                    }}}})
+
+                }}}}).catch(function(e) {{{{
+                    showError("Page load error: " + e.message)
+                }}}})
+
+            }}}}).catch(function(e) {{{{
+                showError("PDF load failed: " + e.message)
+            }}}})
+
+        }}}} catch(e) {{{{
+            showError("Render error: " + e.message)
+        }}}}
+    }}}}
+
+// Try UNPKG first
+loadScript(
+  "https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.min.js",
+  function() {{{{ start(pdfjsLib); }}}},
+  function() {{{{
+    // fallback to jsDelivr
+    loadScript(
+      "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js",
+      function() {{{{ start(pdfjsLib); }}}},
+      function() {{{{
+        showError("Failed to load PDF.js (network or sandbox issue)");
+      }}}}
+    );
+  }}}}
+);
+
+</script>
+</body>
+</html>
+"""
+    st_html(html, height=height, scrolling=False)
 
 
 def render_source_pills(nodes, *, key_prefix: str) -> None:
@@ -142,7 +217,7 @@ def render_source_pills(nodes, *, key_prefix: str) -> None:
         return
     per_row = 6
     for r in range(0, len(ranges), per_row):
-        row = ranges[r : r + per_row]
+        row = ranges[r: r + per_row]
         cols = st.columns(len(row))
         for i, (start, end) in enumerate(row):
             label = mm.format_page_range(start, end)
@@ -164,14 +239,20 @@ def render_source_pills(nodes, *, key_prefix: str) -> None:
 def get_storage():
     return StorageManager()
 
+
 @st.cache_resource
 def get_collections():
     return get_storage().list_collections()
 
 
 # ─── CSS (original + 4 new rules for status pills and mode badge) ─────────────
-BG="#f6f8ff"; SIDEBAR="#ffffff"; PANEL="#ffffff"
-TEXT="#0b1b2b"; BORDER="#cfe0ff"; ACCENT="#2563eb"; CHIP="#f1f5ff"
+BG = "#f6f8ff"
+SIDEBAR = "#ffffff"
+PANEL = "#ffffff"
+TEXT = "#0b1b2b"
+BORDER = "#cfe0ff"
+ACCENT = "#2563eb"
+CHIP = "#f1f5ff"
 
 st.markdown(f"""
 <style>
@@ -280,7 +361,7 @@ def run_pipeline(
         history = conversation_history or []
         history_for_llm = []
         for m in history[-10:]:
-            role    = m.get("role", "user")
+            role = m.get("role", "user")
             content = m.get("content", "")
             if role in ("user", "assistant") and content:
                 history_for_llm.append({"role": role, "content": content})
@@ -311,7 +392,7 @@ def run_pipeline(
         if analysis and analysis.get("needs_clarification"):
             status_q.put({"node": "skip_retrieval", "done": False})
             question = analysis.get("clarification_question",
-                "Could you give me more detail? That'll help me find the right answer.")
+                                    "Could you give me more detail? That'll help me find the right answer.")
             state["plan"] = AnswerPlan(
                 mode="clarify", confidence=0.0,
                 likely_goal=analysis.get("inferred_topic", ""),
@@ -342,9 +423,9 @@ def run_pipeline(
         run_node("memory_write", memory_write_node)
 
         # ── Build metadata ────────────────────────────────────────────────
-        plan         = state.get("plan", {}) or {}
+        plan = state.get("plan", {}) or {}
         source_nodes = state.get("source_nodes", []) or []
-        session      = state.get("session")
+        session = state.get("session")
 
         # Debug: log exactly what metadata keys+values each node carries.
         # This shows filename mismatches immediately in the terminal.
@@ -363,7 +444,8 @@ def run_pipeline(
         sources = []
         for node in source_nodes:
             meta = getattr(node, 'metadata', {}) or {}
-            page    = meta.get('page_number') or meta.get('page') or meta.get('page_label')
+            page = meta.get('page_number') or meta.get(
+                'page') or meta.get('page_label')
             section = meta.get('section') or meta.get('header') or ""
             if page:
                 sources.append({"page": page, "section": section})
@@ -449,13 +531,13 @@ with st.sidebar:
         st.session_state.pdf_filename = None
         st.session_state.pdf_page = 1
         st.session_state.query_count = 0
-        st.session_state.session_id = str(uuid.uuid4())    # NEW: fresh LangGraph thread
+        st.session_state.session_id = str(
+            uuid.uuid4())    # NEW: fresh LangGraph thread
         st.session_state.session_summary = ""
         st.rerun()
-
     st.markdown(
         f'<div style="font-family:JetBrains Mono,monospace;font-size:10px;color:{TEXT};margin-top:8px;opacity:.85;">'
-        f'● pdf_server · port {SERVER_PORT}</div>',
+        f'● inline PDF viewer active</div>',
         unsafe_allow_html=True,
     )
     st.caption("LlamaIndex · LangGraph · ChromaDB · Azure OpenAI")
@@ -531,9 +613,9 @@ with col_chat:
                 # 1. Status pill  — updates with each node name
                 # 2. Response     — fills token by token
                 # 3. Pills        — source page buttons, shown after stream
-                status_ph  = st.empty()
+                status_ph = st.empty()
                 response_ph = st.empty()
-                pills_ph   = st.empty()
+                pills_ph = st.empty()
 
                 # ── Start background thread ────────────────────────────────
                 status_q: queue.Queue = queue.Queue()
@@ -547,7 +629,8 @@ with col_chat:
                         st.session_state.selected_collection,
                         status_q,
                         token_q,
-                        list(st.session_state.messages),  # full history snapshot
+                        # full history snapshot
+                        list(st.session_state.messages),
                     ),
                     daemon=True,
                 )
@@ -555,7 +638,7 @@ with col_chat:
 
                 # ── Poll loop ──────────────────────────────────────────────
                 accumulated = ""
-                final_meta  = {}
+                final_meta = {}
                 pipeline_error = None
 
                 while True:
@@ -563,8 +646,8 @@ with col_chat:
                     try:
                         while True:
                             s = status_q.get_nowait()
-                            node  = s["node"]
-                            done  = s.get("done", False)
+                            node = s["node"]
+                            done = s.get("done", False)
                             error = s.get("error", False)
                             icon, label = NODE_STATUS.get(node, ("⚙️", node))
                             css = "status-pill"
@@ -676,7 +759,7 @@ with col_pdf:
     st.markdown("### 📄 Source document")
 
     fname = st.session_state.pdf_filename
-    page  = int(st.session_state.pdf_page or 1)
+    page = int(st.session_state.pdf_page or 1)
 
     if fname:
         col_info, col_jump = st.columns([3, 1])
@@ -701,17 +784,10 @@ with col_pdf:
                 st.rerun()
 
         render_pdf_viewer_pdfjs(fname, page, height=720)
-
-        viewer_url = get_viewer_url(fname, page)
-        raw_url    = get_pdf_http_url(fname, page)
         st.markdown(
-            f'<a href="{viewer_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
-            f'color:{TEXT};text-decoration:none;border:1px solid {BORDER};'
-            f'padding:4px 12px;border-radius:4px;display:inline-block;margin-top:8px;">↗ open in new tab</a>'
-            f'&nbsp;&nbsp;'
-            f'<a href="{raw_url}" target="_blank" style="font-family:JetBrains Mono,monospace;font-size:11px;'
-            f'color:{TEXT};text-decoration:none;border:1px solid {BORDER};'
-            f'padding:4px 12px;border-radius:4px;display:inline-block;margin-top:8px;">↗ open raw PDF</a>',
+            f'<div style="font-family:JetBrains Mono,monospace;font-size:11px;'
+            f'color:{TEXT};margin-top:8px;opacity:.7;">'
+            f'Inline PDF viewer</div>',
             unsafe_allow_html=True,
         )
     else:
