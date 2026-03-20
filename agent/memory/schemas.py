@@ -20,7 +20,7 @@ class SessionData(BaseModel):
     # Conversation meta
     turn_count: int = 0
     last_intent: Optional[str] = None
-    prefferred_detail_level: str = "normal" # brief|normal|detailed
+    preferred_detail_level: str = "normal" # brief|normal|detailed
     created_at: datetime =Field(default_factory=datetime.utcnow)
     last_active: datetime = Field(default_factory=datetime.utcnow)
 
