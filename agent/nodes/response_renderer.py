@@ -105,12 +105,17 @@ def response_renderer_node(state: AgentState) -> dict[str, Any]:
         # Graceful fallback: return raw_answer with an apology prefix
         # Better to give the user the retrieved answer than nothing
         raw = state.get("raw_answer", "")
+        if not raw:
+            docs = state.get("source_nodes", [])
+            raw = "\n\n".join(
+                f"[Page {doc.metadata.get('page', '?')}]\n{doc.page_content}"
+                for doc in docs[:3]  # top 3 chunks is enough for a fallback
+            )
+
         fallback = (
-            f"{raw}\n\n"
-            f"(Note: I had trouble formatting this response. "
+            f"{raw}\n\n(Note: I had trouble formatting this response. "
             f"The information above is from the manual.)"
         ) if raw else "I'm having trouble generating a response right now. Please try again."
-
         return {
             "final_response": fallback,
             "response_ready": True,

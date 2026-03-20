@@ -54,7 +54,7 @@ PAGE_LINK_FORMAT = os.getenv("PAGE_LINK_FORMAT", "file://")  # or "http://" for 
 # Create directories if they don't exist
 PDF_DIRECTORY.mkdir(parents=True, exist_ok=True)
 CHROMA_DB_PATH.mkdir(parents=True, exist_ok=True)
-DOCSTORE_PATH.mkdir(parents=True, exist_ok=True)
+# DOCSTORE_PATH.mkdir(parents=True, exist_ok=True)
 
 # Langgraph 
 REDIS_URL = os.getenv("REDIS_URL")
