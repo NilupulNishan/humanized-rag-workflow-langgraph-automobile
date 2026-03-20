@@ -58,7 +58,7 @@ def answer_planner_node(state: AgentState) -> dict[str, Any]:
     retrieval_successful = state.get("retrieval_successful", False)
     
     # ── Handle retrieval failure before calling LLM
-    if not retrieval_successful or not raw_answer:
+    if not retrieval_successful or not source_nodes:
         logger.warning("answer_planner: retrieval failed or empty - escalating")
         return {
             "plan": AnswerPlan(
