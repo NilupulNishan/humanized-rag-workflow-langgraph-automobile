@@ -36,17 +36,12 @@ ENV/
 .env.local
 .env.*.local
 
-# Chroma DB local storage
-data/
-data/docstore
-data/chroma_db/
-data/chroma_db/**
 
 # Leads Data
 leads_data.json
 *.zip
 *.json
-*.pdf
+
 
 # IDE
 .vscode/
