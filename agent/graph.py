@@ -178,19 +178,15 @@ def route_after_understanding(state: AgentState) -> str:
       "skip_retrieval" — needs clarification before searching
       "memory_read"    — normal pipeline through retriever + planner
     """
-    analysis = state.get("analysis", {})
+    analysis = state.get("analysis") or {}
+    intent = analysis.get("intent", "")   # works on both dict and TypedDict
 
-    if not analysis:
-        return "memory_read"
-
-    # General questions — answer directly with LLM, no manual lookup
-    if analysis.get("intent") == "general":
-        logger.debug("route: intent=general → direct_answer")
+    if intent == "general":
+        logger.info("route: intent=general → direct_answer")
         return "direct_answer"
 
-    # Clarification needed — skip retrieval, ask user first
     if analysis.get("needs_clarification", False):
-        logger.debug("route: needs_clarification=True → skip_retrieval")
+        logger.info("route: needs_clarification → skip_retrieval")
         return "skip_retrieval"
 
     return "memory_read"
