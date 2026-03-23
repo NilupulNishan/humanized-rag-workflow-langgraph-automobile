@@ -26,7 +26,7 @@ You must return ONLY valid JSON. No explanation, no markdown, no extra text.
 
 JSON schema:
 {
-  "intent": one of ["general", "faq", "troubleshooting", "how_to", "page_request", "comparison", "followup"],
+  "intent": one of ["general", "faq", "troubleshooting", "how_to", "page_request", "comparison", "followup", "this_car_vs_another_comparison"],
   "specificity": one of ["short", "medium", "detailed"],
   "answer_mode": one of ["direct", "guided", "troubleshoot", "clarify"],
   "expanded_queries": list of 2-4 strings (search variants, only if specificity is short),
@@ -61,6 +61,9 @@ JSON schema:
 "how_to" — a step-by-step procedure question about the product/system.
 "page_request" — asking for a specific page of the document.
 "comparison" — asking to compare options, features, or configurations.
+"this_car_vs_another_comparison" — user wants to compare this car against another car or product.
+  Examples: "vs BYD Seal", "how does this compare to the Atto 3", "which is faster".
+  Always set intent="this_car_vs_another_comparison" for these — they require web search, not the manual.
 
 ## Other rules
 - "short" specificity = 1-3 words. Always expand these into multiple search variants
@@ -94,7 +97,7 @@ You must return ONLY valid JSON. No explanation, no markdown, no extra text.
 
 JSON schema:
 {
-  "mode": one of ["direct", "step_by_step", "troubleshoot", "clarify", "escalate"],
+  "mode": one of ["direct", "step_by_step", "troubleshoot", "clarify", "escalate", "web_search_needed"],
   "confidence": float between 0.0 and 1.0,
   "likely_goal": string (what the user is trying to achieve),
   "steps": list of strings or null (ordered steps, for step_by_step and troubleshoot modes),
@@ -113,7 +116,12 @@ Rules:
 - expected_outcomes match steps 1:1 when provided.
 - safety_notes: only include genuinely important cautions, not filler.
 - escalate only when retrieved content has no relevant information at all.
+- If the user intent is a comparison against another car/product, or the retrieved content
+  is clearly about THIS car only and cannot answer a cross-product comparison,
+  set mode="web_search_needed" and confidence=0.0.
+  Do NOT attempt to answer comparisons from manual content alone.
 """
+
 
 PLANNER_USER = """\
 {session_context}
@@ -265,4 +273,5 @@ RENDERER_PROMPTS = {
     "troubleshoot": RENDERER_TROUBLESHOOT,
     "clarify":      RENDERER_CLARIFY,
     "escalate":     RENDERER_ESCALATE,
+    "web_search_needed": RENDERER_ESCALATE,
 }

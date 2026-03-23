@@ -24,6 +24,8 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+
 # Azure OpenAI Configuration
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")

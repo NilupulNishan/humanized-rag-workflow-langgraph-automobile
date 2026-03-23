@@ -97,7 +97,9 @@ class AgentState(TypedDict, total=False):
  
     # ── Planning output
     plan: AnswerPlan
- 
+
+    search_used: bool  
+    
     # ── Final output
     final_response: str                # human prose — sent to user
     response_ready: bool               # signals end of graph
