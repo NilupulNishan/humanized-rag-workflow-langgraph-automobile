@@ -326,6 +326,7 @@ NODE_STATUS = {
     "retriever":           ("🔍", "Searching the manual…"),
     "answer_planner":      ("📋", "Planning the answer…"),
     "response_renderer":   ("✍️",  "Writing response…"),
+    "web_search":          ("🌐", "Searching the web…"),
     "memory_write":        ("💾", "Saving session…"),
     "error":               ("❌", "Something went wrong"),
 }
@@ -385,14 +386,27 @@ def run_pipeline(
             status_q.put({"node": name, "done": True})
 
         # ── Node 1 ────────────────────────────────────────────────────────
+        # Replace the node execution block in run_pipeline() with this:
         run_node("query_understanding", query_understanding_node)
 
-        # ── Clarification shortcut ────────────────────────────────────────
-        analysis = state.get("analysis", {})
-        if analysis and analysis.get("needs_clarification"):
-            status_q.put({"node": "skip_retrieval", "done": False})
+        analysis    = state.get("analysis", {})
+        intent      = (analysis or {}).get("intent", "")
+        needs_clarification = (analysis or {}).get("needs_clarification", False)
+
+        if intent == "general":
+            # Already handled inside direct_answer_node
+            from agent.graph import direct_answer_node
+            run_node("direct_answer", direct_answer_node)
+
+        elif intent == "this_car_vs_another_comparison":
+            # Skip manual retrieval — go straight to web search
+            from agent.nodes.web_search_node import web_search_node
+            run_node("web_search", web_search_node)
+
+        elif needs_clarification:
+            from agent.state import AnswerPlan
             question = analysis.get("clarification_question",
-                                    "Could you give me more detail? That'll help me find the right answer.")
+                "Could you give me more detail? That'll help me find the right answer.")
             state["plan"] = AnswerPlan(
                 mode="clarify", confidence=0.0,
                 likely_goal=analysis.get("inferred_topic", ""),
@@ -403,11 +417,21 @@ def run_pipeline(
             state["raw_answer"] = ""
             state["source_nodes"] = []
             state["retrieval_successful"] = False
-            status_q.put({"node": "skip_retrieval", "done": True})
+
         else:
-            run_node("memory_read",   memory_read_node)
-            run_node("retriever",     retriever_node)
+            # Normal manual pipeline
+            run_node("memory_read",    memory_read_node)
+            run_node("retriever",      retriever_node)
             run_node("answer_planner", answer_planner_node)
+
+            # After planner — check if web search needed
+            plan       = state.get("plan", {}) or {}
+            mode       = plan.get("mode", "direct")
+            confidence = plan.get("confidence", 1.0)
+            search_used = state.get("search_used", False)  # ← add this
+            if not search_used and (mode in ("web_search_needed", "escalate") or confidence < 0.35):
+                from agent.nodes.web_search_node import web_search_node as _wsn
+                run_node("web_search", _wsn)
 
         # ── Node 5: streaming renderer ────────────────────────────────────
         status_q.put({"node": "response_renderer", "done": False})
@@ -454,6 +478,15 @@ def run_pipeline(
         if session and hasattr(session, 'to_context_string'):
             session_summary = session.to_context_string()
 
+        web_sources = []
+        for node in source_nodes:
+            meta = getattr(node, 'metadata', {}) or {}
+            if meta.get('source', '').startswith('http'):
+                web_sources.append({
+                    "url":   meta.get('source', ''),
+                    "title": meta.get('title', meta.get('source', '')),
+                })
+
         token_q.put({"DONE": True, "meta": {
             "mode":            plan.get("mode", "direct"),
             "confidence":      plan.get("confidence", 0.5),
@@ -463,6 +496,7 @@ def run_pipeline(
             "session_summary": session_summary,
             "full_response":   full_response,
             "collection":      collection_name,
+            "web_sources": web_sources,
         }})
 
     except Exception as e:
@@ -725,7 +759,13 @@ with col_chat:
                             source_nodes,
                             key_prefix=f"live_{st.session_state.query_count}",
                         )
-
+                        # Web source links (shown instead of page pills for web results)
+                        web_sources = final_meta.get("web_sources", [])
+                        if web_sources:
+                            st.markdown("**Sources from the web:**")
+                            for ws in web_sources:
+                                st.markdown(f"- [{ws['title']}]({ws['url']})")
+                                
                     # Auto-jump PDF viewer to first source page
                     if source_nodes:
                         mm = MetadataManager()

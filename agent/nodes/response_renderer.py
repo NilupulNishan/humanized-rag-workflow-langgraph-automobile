@@ -36,7 +36,7 @@ from agent.prompts.system_prompt import RENDERER_PROMPTS, RENDERER_USER
 logger = logging.getLogger(__name__)
 
 
-def _get_llm() -> AzureChatOpenAI:
+def _get_llm(mode: str) -> AzureChatOpenAI:
     from config import settings
     return AzureChatOpenAI(
         azure_deployment=settings.AZURE_GPT4O_MINI_DEPLOYMENT,
@@ -44,7 +44,7 @@ def _get_llm() -> AzureChatOpenAI:
         api_key=settings.AZURE_OPENAI_API_KEY,
         api_version=settings.AZURE_OPENAI_API_VERSION,
         temperature=0.4,    # slight warmth — this is the conversational layer
-        max_tokens=800,
+        max_tokens=1200 if mode == "web_search" else 800,
     )
 
 
@@ -73,15 +73,23 @@ def response_renderer_node(state: AgentState) -> dict[str, Any]:
     # ── Serialise plan for prompt ──────────────────────────────────────────
     plan_json = json.dumps(plan, indent=2, default=str) if plan else "{}"
 
+    raw_answer  = state.get("raw_answer", "")
+    search_used = state.get("search_used", False)
+    web_context = ""
+    
+    if raw_answer and search_used:
+        web_context = f"Web search content — use this as your primary source:\n\n{raw_answer}"
+
     user_prompt = RENDERER_USER.format(
         session_context=session_context,
         user_input=user_input,
         plan_json=plan_json,
+        web_context=web_context,
     )
 
     # ── Call LLM ──────────────────────────────────────────────────────────
     try:
-        llm = _get_llm()
+        llm = _get_llm(mode=mode)
         response = llm.invoke([
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_prompt},
@@ -145,10 +153,17 @@ def response_renderer_stream(state: AgentState):
             session_context = session.to_context_string()
 
     plan_json = json.dumps(plan, indent=2, default=str) if plan else "{}"
+    raw_answer  = state.get("raw_answer", "")
+    search_used = state.get("search_used", False)
+    web_context = ""
+    if raw_answer and search_used:
+        web_context = f"Web search content — use this as your primary source:\n\n{raw_answer}"
+
     user_prompt = RENDERER_USER.format(
         session_context=session_context,
         user_input=user_input,
         plan_json=plan_json,
+        web_context=web_context,
     )
 
     try:
@@ -164,7 +179,7 @@ def response_renderer_stream(state: AgentState):
                 llm_messages.append({"role": m["role"], "content": m["content"]})
         llm_messages.append({"role": "user", "content": user_prompt})
 
-        llm = _get_llm()
+        llm = _get_llm(mode=mode)
         for chunk in llm.stream(llm_messages):
             if chunk.content:
                 yield chunk.content

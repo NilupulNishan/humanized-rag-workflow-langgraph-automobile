@@ -141,7 +141,7 @@ def answer_planner_node(state: AgentState) -> dict[str, Any]:
         # ---- Confidence-based mode override
         # If planner returned a confident "direct" answer but confidence
         # is actually low, force clarification. Prevents overconfident answers
-        if plan["confidence"] < CONF_LOW and plan["mode"] not in ("clarify", "escalate"):
+        if plan["confidence"] < CONF_LOW and plan["mode"] not in ("clarify", "escalate", "web_search_needed"):
             logger.info(
                 f"answer_planner: confidence {plan['confidence']:.2f} below threshold "
                 f"— overriding mode from '{plan['mode']}' to 'clarify'"
