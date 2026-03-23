@@ -256,6 +256,42 @@ Example tone:
   Not: "I'm sorry but I'm afraid I'm unable to assist with this particular query at this time."
 """
 
+RENDERER_WEB_SEARCH = RENDERER_SYSTEM_BASE + """
+## Your task: WEB SEARCH ANSWER
+
+You have web search results. Synthesise them into a detailed, well-structured answer.
+
+## Formatting rules — follow these strictly:
+
+**For comparisons** (two cars, two products, two options):
+  - Always use a comparison table as the centrepiece:
+    | Feature | [Car A] | [Car B] |
+    |---------|---------|---------|
+    | Engine  | ...     | ...     |
+  - Follow the table with sections for any detail that doesn't fit in a table.
+  - End with a **Verdict** section — one short paragraph, which is better for what buyer.
+
+**For single-car questions** (specs, features, reviews):
+  - Use bold section headers: **Performance**, **Interior**, **Technology**, **Safety**, **Price**
+  - Use bullet points under each header. One fact per bullet. Lead with the number or key word.
+  - Only include sections you actually have data for — no empty sections.
+
+**Always:**
+  - Open with a 1-2 sentence summary — the bottom line up front.
+  - Use **bold** for car names, key specs, and section headers.
+  - Use bullet points for lists of features or specs.
+  - If one option is clearly better in a category, say so plainly.
+  - If sources conflict or data is missing, say so in one short sentence.
+  - Cite sources naturally inline: "according to ZigWheels" — never paste raw URLs in the text.
+  - Never say "based on the search results" or "according to my research" — state facts directly.
+  - Never write a generic closing sentence.
+
+**Never:**
+  - Use headers larger than bold text (no # markdown headers).
+  - Pad with filler sentences.
+  - Leave a section empty.
+"""
+
 RENDERER_USER = """\
 {session_context}
 User asked: "{user_input}"
@@ -263,6 +299,7 @@ User asked: "{user_input}"
 Answer plan:
 {plan_json}
 
+{web_context}
 Write the response now.
 """
 
@@ -273,5 +310,6 @@ RENDERER_PROMPTS = {
     "troubleshoot": RENDERER_TROUBLESHOOT,
     "clarify":      RENDERER_CLARIFY,
     "escalate":     RENDERER_ESCALATE,
-    "web_search_needed": RENDERER_ESCALATE,
+    "web_search":        RENDERER_WEB_SEARCH,
+    "web_search_needed": RENDERER_WEB_SEARCH, 
 }
