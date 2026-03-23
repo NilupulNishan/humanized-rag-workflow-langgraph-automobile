@@ -58,73 +58,75 @@ def memory_read_node(state: AgentState) -> dict[str, Any]:
     return {"session": session}
 
 def memory_write_node(state: AgentState) -> dict[str, Any]:
-    """
-    WRITE pass — called after response is generated.
-    Extracts new facts from this turn and persists them.
- 
-    Facts extracted:
-    - Product model (if mentioned by user or in retrieved content)
-    - Issue summary (from analysis.inferred_topic)
-    - Stage advancement (based on plan.mode)
-    - Steps attempted (from plan.steps — what we told user to try)
-    """
     session_id = state.get("session_id", "default")
-    store = get_session_store()
-    session = store.get(session_id)
+    store      = get_session_store()
+    session    = store.get(session_id)
 
     if not session:
         logger.warning(f"memory_write: session {session_id} not found, skipping")
         return {}
-    
-    user_input = state.get("user_input", "")
-    analysis = state.get("analysis", {})
-    plan = state.get("plan", {})
 
-    # ---- Extract product model from user input
-    # simple heuristic: look for model-like patterns
+    user_input = state.get("user_input", "")
+    analysis   = state.get("analysis", {}) or {}
+    plan       = state.get("plan", {}) or {}
+
+    # ── Product model ─────────────────────────────────────────────────────
     if not session.product_model:
         model = _extract_model(user_input)
         if model:
             session.product_model = model
-            logger.debug(f"memory_write: detected model: {model}")
 
-    # --- Update issue summery from inferred topic
-    if not session.issue_summary and analysis.get("inferred_topic"):
-        topic = analysis["inferred_topic"]
-        if topic and topic.lower() != "unknown":
-            session.issue_summary = topic
+    # ── BUG FIX 1: Always update issue_summary when topic changes ─────────
+    # Old code: if not session.issue_summary → froze on first topic forever
+    # New code: update whenever inferred_topic differs from current summary
+    new_topic = analysis.get("inferred_topic", "")
+    intent    = analysis.get("intent", "")
 
-    # ---- Advance troubleshooting stage based on plan mode
+    if new_topic and new_topic.lower() not in ("unknown", "social/conversational"):
+        # BUG FIX 2: Reset attempted_steps when topic changes significantly
+        # Detect topic change: new topic doesn't overlap with current summary
+        current = (session.issue_summary or "").lower()
+        incoming = new_topic.lower()
+        words_overlap = any(
+            w in current for w in incoming.split()
+            if len(w) > 4  # ignore short words like "the", "how"
+        )
+        if not words_overlap and session.issue_summary:
+            # Topic has changed — reset context so old steps don't bleed in
+            logger.info(
+                f"memory_write: topic changed "
+                f"'{session.issue_summary}' → '{new_topic}' — resetting steps"
+            )
+            session.attempted_steps = []
+            session.current_stage   = "initial"
+
+        session.issue_summary = new_topic
+
+    # ── Stage advancement ─────────────────────────────────────────────────
     plan_mode = plan.get("mode", "")
     if plan_mode in ("troubleshoot", "step_by_step") and session.current_stage == "initial":
         session.advance_stage("diagnosing")
-    elif  plan_mode == "escalated":
+    elif plan_mode == "escalate":
         session.advance_stage("escalated")
 
-    # ---- Record steps we gave user (they'll attempt them)
-    steps = plan.get("steps") or []
-    for step in steps[:2]: # Record first 2 steps as "given to user"
-        # We don't mark them as "attempted" yet — user hasn't done them
-        # On the next turn, if user says "tried that", memory_read injects it
-        pass
-
-    # --- Parse "already tried" from user message
+    # ── Tried steps from user message ────────────────────────────────────
     tried = _extract_tried_steps(user_input)
     for step in tried:
         session.mark_step_attempted(step)
-         
-    import datetime
-    session.last_active = datetime.datetime.utcnow()
-    store.save(session_id, session)
 
+    # ── BUG FIX 3: use timezone-aware datetime ────────────────────────────
+    from datetime import datetime, timezone
+    session.last_active = datetime.now(timezone.utc)
+
+    store.save(session_id, session)
     logger.debug(
-        f"memory_write: session {session_id} updated |"
-        f"stage={session.current_stage} | tried={session.attempted_steps}"
+        f"memory_write: {session_id} | "
+        f"topic='{session.issue_summary}' | "
+        f"stage={session.current_stage} | "
+        f"tried={session.attempted_steps}"
     )
 
     return {"session": session}
-    
-    
 
 # helpers ------------------------------------------
 def _extract_model(text: str) -> str | None:
