@@ -24,6 +24,8 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
 
     user_input      = state.get("user_input", "")
     collection_name = state.get("collection_name", "")
+    analysis     = state.get("analysis", {}) or {}
+    session      = state.get("session")
 
     # Extract car model from collection name for richer query
     # e.g. "biac_x55_ii_user_manual_en_5nyo" → "BIAC X55"
@@ -37,6 +39,22 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
             break
         clean_parts.append(p.upper())
     car_model = " ".join(clean_parts).strip() or "car"
+
+    inferred_topic = analysis.get("inferred_topic", "")
+
+    # Pull session context for additional grounding
+    session_context = ""
+    if session and hasattr(session, "to_context_string"):
+        session_context = session.to_context_string()
+    elif isinstance(session, dict) and session.get("issue_summary"):
+        session_context = session.get("issue_summary", "")
+
+    if inferred_topic and inferred_topic.lower() not in user_input.lower():
+        query = f"{car_model} {inferred_topic}"
+    else:
+        query = f"{car_model} {user_input}"
+
+    logger.info(f"web_search_node: inferred_topic='{inferred_topic}' query='{query}'")
     logger.info(f"web_search_node: extracted car_model='{car_model}' from collection='{collection_name}'")
 
     query = f"{car_model} {user_input}"
