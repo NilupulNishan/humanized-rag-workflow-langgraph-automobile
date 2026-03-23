@@ -17,9 +17,11 @@ Run:
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from api.chat_router import router as chat_router
 
@@ -35,7 +37,6 @@ async def lifespan(app: FastAPI):
     """Startup / shutdown lifecycle."""
     logger.info("VivoAssist API starting...")
 
-    # Pre-warm: initialise graph singleton so first request isn't slow
     try:
         from agent.graph import get_graph
         get_graph()
@@ -57,11 +58,16 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],      # tighten for production
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+PDF_DIR = BASE_DIR / "data" / "pdfs"
+
+app.mount("/pdfs", StaticFiles(directory=str(PDF_DIR)), name="pdfs")
 
 app.include_router(chat_router)
 

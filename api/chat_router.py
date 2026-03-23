@@ -1,26 +1,10 @@
-"""
-api/chat_router.py
-
-REST and WebSocket chat endpoints.
-
-REST  POST /chat         — full response, returns JSON
-WS         /ws/{session_id} — streaming tokens via WebSocket
-
-WebSocket protocol (JSON frames):
-  Client → Server:  {"message": "wifi not working", "collection": "hp_manual"}
-  Server → Client:  {"type": "token",    "data": "Let"}           ← token stream
-  Server → Client:  {"type": "token",    "data": "'s check..."}
-  Server → Client:  {"type": "sources",  "data": [{"page": 12}]}  ← after stream
-  Server → Client:  {"type": "plan",     "data": {...}}            ← plan metadata
-  Server → Client:  {"type": "done",     "data": null}             ← end signal
-  Server → Client:  {"type": "error",    "data": "message"}        ← on failure
-"""
-
 from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
+from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -29,8 +13,6 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-
-# ─── REST models ─────────────────────────────────────────────────────────────
 
 class ChatRequest(BaseModel):
     message: str
@@ -52,22 +34,14 @@ class ChatResponse(BaseModel):
     needs_followup: bool
 
 
-# ─── REST endpoint ────────────────────────────────────────────────────────────
-
 @router.post("/chat", response_model=ChatResponse)
 async def chat_endpoint(request: ChatRequest):
-    """
-    Synchronous REST endpoint. Returns complete response as JSON.
-    Use this for simple integrations or testing.
-    Use WebSocket for production UI (streaming).
-    """
     import asyncio
     from agent.graph import chat
 
     session_id = request.session_id or str(uuid.uuid4())
 
     try:
-        # graph.chat() is sync — run in thread pool to not block event loop
         result = await asyncio.get_event_loop().run_in_executor(
             None,
             lambda: chat(
@@ -82,9 +56,9 @@ async def chat_endpoint(request: ChatRequest):
 
         sources = []
         for node in source_nodes:
-            meta = getattr(node, 'metadata', {}) or {}
-            page = meta.get('page_number') or meta.get('page') or meta.get('page_label')
-            section = meta.get('section') or meta.get('header') or ""
+            meta = getattr(node, "metadata", {}) or {}
+            page = meta.get("page_number") or meta.get("page") or meta.get("page_label")
+            section = meta.get("section") or meta.get("header") or ""
             if page:
                 sources.append(SourceInfo(page=page, section=section))
 
@@ -109,31 +83,18 @@ async def chat_endpoint(request: ChatRequest):
         )
 
 
-# ─── WebSocket endpoint ───────────────────────────────────────────────────────
-
 @router.websocket("/ws/{session_id}")
 async def websocket_chat(websocket: WebSocket, session_id: str):
-    """
-    Streaming WebSocket endpoint.
-
-    Flow per message:
-      1. Run query_understanding + memory_read + retriever + answer_planner (sync)
-      2. Stream renderer tokens via WebSocket
-      3. Run memory_write (sync)
-      4. Send sources + plan metadata
-      5. Send done signal
-    """
     await websocket.accept()
     logger.info(f"WebSocket connected: {session_id}")
 
     try:
         while True:
-            # Receive message
             raw = await websocket.receive_text()
             try:
                 data = json.loads(raw)
-                user_input   = data.get("message", "").strip()
-                collection   = data.get("collection")
+                user_input = data.get("message", "").strip()
+                collection = data.get("collection")
             except json.JSONDecodeError:
                 user_input = raw.strip()
                 collection = None
@@ -167,55 +128,41 @@ async def _handle_ws_message(
     session_id: str,
     collection_name: str | None,
 ):
-    """
-    Handles one WebSocket message:
-    - Runs the graph pipeline up to response_renderer
-    - Streams renderer tokens
-    - Sends metadata frames after stream completes
-    """
     import asyncio
-    from agent.graph import get_graph
     from agent.state import AgentState
     from agent.nodes.response_renderer import response_renderer_stream
-
-    graph = get_graph()
-
-    initial_state: AgentState = {
-        "user_input":      user_input,
-        "session_id":      session_id,
-        "collection_name": collection_name or "",
-        "messages":        [{"role": "user", "content": user_input}],
-    }
-    config = {"configurable": {"thread_id": session_id}}
-
-    # ── Run pipeline up to (but not including) response_renderer ──────────
-    # We do this by running individual nodes manually for streaming control.
-    # The full graph.invoke() would block until renderer completes.
-
     from agent.nodes.query_understanding import query_understanding_node
     from agent.nodes.memory_node import memory_read_node, memory_write_node
     from agent.nodes.retriever_node import retriever_node
     from agent.nodes.answer_planner import answer_planner_node
+    from agent.state import AnswerPlan
+
+    initial_state: AgentState = {
+        "user_input": user_input,
+        "session_id": session_id,
+        "collection_name": collection_name or "",
+        "messages": [{"role": "user", "content": user_input}],
+    }
 
     state = dict(initial_state)
-
-    # Run pipeline nodes synchronously in executor (they're CPU/IO bound)
     loop = asyncio.get_event_loop()
 
     state.update(await loop.run_in_executor(None, lambda: query_understanding_node(state)))
     state.update(await loop.run_in_executor(None, lambda: memory_read_node(state)))
 
-    # Check if clarification needed (skip retriever)
     analysis = state.get("analysis", {})
     if analysis and analysis.get("needs_clarification"):
-        from agent.nodes.answer_planner import _fallback_plan
-        from agent.state import AnswerPlan
         question = analysis.get("clarification_question", "Could you give me more detail?")
         state["plan"] = AnswerPlan(
-            mode="clarify", confidence=0.0,
+            mode="clarify",
+            confidence=0.0,
             likely_goal=analysis.get("inferred_topic", ""),
-            steps=None, expected_outcomes=None, safety_notes=[],
-            citations=[], first_clarifying_question=question, escalation_message=None,
+            steps=None,
+            expected_outcomes=None,
+            safety_notes=[],
+            citations=[],
+            first_clarifying_question=question,
+            escalation_message=None,
         )
         state["raw_answer"] = ""
         state["source_nodes"] = []
@@ -224,11 +171,9 @@ async def _handle_ws_message(
         state.update(await loop.run_in_executor(None, lambda: retriever_node(state)))
         state.update(await loop.run_in_executor(None, lambda: answer_planner_node(state)))
 
-    # ── Stream renderer tokens ─────────────────────────────────────────────
     full_response = ""
 
     def _generate_tokens():
-        """Runs in executor — yields tokens from streaming renderer."""
         return list(response_renderer_stream(state))
 
     tokens = await loop.run_in_executor(None, _generate_tokens)
@@ -240,18 +185,16 @@ async def _handle_ws_message(
     state["final_response"] = full_response
     state["response_ready"] = True
 
-    # ── Save memory ────────────────────────────────────────────────────────
     await loop.run_in_executor(None, lambda: memory_write_node(state))
 
-    # ── Send metadata frames ───────────────────────────────────────────────
     plan = state.get("plan", {}) or {}
     source_nodes = state.get("source_nodes", []) or []
 
     sources = []
     for node in source_nodes:
-        meta = getattr(node, 'metadata', {}) or {}
-        page = meta.get('page_number') or meta.get('page') or meta.get('page_label')
-        section = meta.get('section') or meta.get('header') or ""
+        meta = getattr(node, "metadata", {}) or {}
+        page = meta.get("page_number") or meta.get("page") or meta.get("page_label")
+        section = meta.get("section") or meta.get("header") or ""
         if page:
             sources.append({"page": page, "section": section})
 
@@ -270,22 +213,36 @@ async def _handle_ws_message(
     await websocket.send_text(json.dumps({"type": "done", "data": None}))
 
 
-# ─── Collection management ────────────────────────────────────────────────────
+def slugify_filename(name: str) -> str:
+    name = name.lower()
+    name = re.sub(r"\.pdf$", "", name)
+    name = re.sub(r"[^a-z0-9]+", "_", name)
+    return name.strip("_")
+
 
 @router.get("/collections")
 async def list_collections():
-    """List available PDF collections."""
     try:
-        from src.storage_manager import StorageManager
-        sm = StorageManager()
-        return {"collections": sm.list_collections()}
+        pdf_dir = Path("data/pdfs")
+        items = []
+
+        for pdf_file in pdf_dir.glob("*.pdf"):
+            collection_id = slugify_filename(pdf_file.name)
+            items.append({
+                "id": collection_id,
+                "title": pdf_file.stem,
+                "pdf_url": f"/pdfs/{pdf_file.name}",
+                "filename": pdf_file.name,
+            })
+
+        return {"collections": items}
+
     except Exception as e:
         return {"collections": [], "error": str(e)}
 
 
 @router.delete("/session/{session_id}")
 async def clear_session(session_id: str):
-    """Clear session memory for a given session."""
     try:
         from agent.memory.session_store import get_session_store
         store = get_session_store()
