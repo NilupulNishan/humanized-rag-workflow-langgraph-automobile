@@ -428,10 +428,10 @@ def run_pipeline(
             plan       = state.get("plan", {}) or {}
             mode       = plan.get("mode", "direct")
             confidence = plan.get("confidence", 1.0)
-
-            if mode == "web_search_needed" or mode == "escalate" or confidence < 0.35:
-                from agent.nodes.web_search_node import web_search_node
-        run_node("web_search", web_search_node)
+            search_used = state.get("search_used", False)  # ← add this
+            if not search_used and (mode in ("web_search_needed", "escalate") or confidence < 0.35):
+                from agent.nodes.web_search_node import web_search_node as _wsn
+                run_node("web_search", _wsn)
 
         # ── Node 5: streaming renderer ────────────────────────────────────
         status_q.put({"node": "response_renderer", "done": False})

@@ -51,7 +51,6 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
                 metadata={
                     "source":   url,
                     "title":    title,
-                    "page":     "web",
                     "filename": url,
                 }
             ))

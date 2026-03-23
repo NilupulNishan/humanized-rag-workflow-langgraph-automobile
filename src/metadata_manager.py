@@ -36,13 +36,18 @@ class MetadataManager:
         # Try 'page' key (standard)
         page = node.metadata.get('page')
         if page:
-            return int(page)
+            try:
+                return int(page)
+            except (ValueError, TypeError):
+                return None 
         
         # Try 'start_page' (fallback)
         page = node.metadata.get('start_page')
         if page:
-            return int(page)
-        
+            try:
+                return int(page)
+            except (ValueError, TypeError):
+                return None
         return None
     
     @staticmethod
