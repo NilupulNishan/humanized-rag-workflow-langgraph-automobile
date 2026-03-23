@@ -27,16 +27,28 @@ def web_search_node(state: AgentState) -> dict[str, Any]:
 
     # Extract car model from collection name for richer query
     # e.g. "biac_x55_ii_user_manual_en_5nyo" → "BIAC X55"
-    car_model = " ".join(
-        p.upper() for p in collection_name.split("_")[:2]
-    ) if collection_name else "this car"
+    SKIP_PARTS = {"ii", "iii", "iv", "user", "manual", "en"}
+    car_parts  = collection_name.split("_") if collection_name else []
+    clean_parts = []
+    for p in car_parts:
+        if p.lower() in SKIP_PARTS:
+            continue
+        if len(p) <= 4 and any(c.isdigit() for c in p):
+            break
+        clean_parts.append(p.upper())
+    car_model = " ".join(clean_parts).strip() or "car"
+    logger.info(f"web_search_node: extracted car_model='{car_model}' from collection='{collection_name}'")
 
     query = f"{car_model} {user_input}"
     logger.info(f"web_search_node: query='{query}'")
 
     try:
         client  = TavilyClient(api_key=settings.TAVILY_API_KEY)
-        results = client.search(query, max_results=5)
+        results = client.search(
+            query,
+            max_results=5,
+            search_depth="advanced"
+        )
 
         docs = []
         citations = []

@@ -478,6 +478,15 @@ def run_pipeline(
         if session and hasattr(session, 'to_context_string'):
             session_summary = session.to_context_string()
 
+        web_sources = []
+        for node in source_nodes:
+            meta = getattr(node, 'metadata', {}) or {}
+            if meta.get('source', '').startswith('http'):
+                web_sources.append({
+                    "url":   meta.get('source', ''),
+                    "title": meta.get('title', meta.get('source', '')),
+                })
+
         token_q.put({"DONE": True, "meta": {
             "mode":            plan.get("mode", "direct"),
             "confidence":      plan.get("confidence", 0.5),
@@ -487,6 +496,7 @@ def run_pipeline(
             "session_summary": session_summary,
             "full_response":   full_response,
             "collection":      collection_name,
+            "web_sources": web_sources,
         }})
 
     except Exception as e:
@@ -749,7 +759,13 @@ with col_chat:
                             source_nodes,
                             key_prefix=f"live_{st.session_state.query_count}",
                         )
-
+                        # Web source links (shown instead of page pills for web results)
+                        web_sources = final_meta.get("web_sources", [])
+                        if web_sources:
+                            st.markdown("**Sources from the web:**")
+                            for ws in web_sources:
+                                st.markdown(f"- [{ws['title']}]({ws['url']})")
+                                
                     # Auto-jump PDF viewer to first source page
                     if source_nodes:
                         mm = MetadataManager()
