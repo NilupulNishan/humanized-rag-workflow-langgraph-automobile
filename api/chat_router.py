@@ -18,16 +18,16 @@ router = APIRouter()
 # and used by WebSocket status events.
 
 NODE_STATUS = {
-    "query_understanding": {"icon": "🧠", "label": "Understanding question…"},
-    "memory_read":         {"icon": "💭", "label": "Reading session context…"},
-    "skip_retrieval":      {"icon": "⏭️",  "label": "Preparing clarification…"},
-    "retriever":           {"icon": "🔍", "label": "Searching the manual…"},
-    "answer_planner":      {"icon": "📋", "label": "Planning the answer…"},
-    "web_search":          {"icon": "🌐", "label": "Searching the web…"},
-    "response_renderer":   {"icon": "✍️",  "label": "Writing response…"},
-    "memory_write":        {"icon": "💾", "label": "Saving session…"},
-    "direct_answer":       {"icon": "💬", "label": "Generating response…"},
-    "error":               {"icon": "❌", "label": "Something went wrong"},
+    "query_understanding": {"icon": "🧠", "label": "Reading between the lines…"},
+    "memory_read":         {"icon": "💭", "label": "Recalling our conversation…"},
+    "skip_retrieval":      {"icon": "🤔", "label": "Need a little more from you…"},
+    "retriever":           {"icon": "🔍", "label": "Digging through the manual…"},
+    "answer_planner":      {"icon": "⚡", "label": "Connecting the dots…"},
+    "web_search":          {"icon": "🌐", "label": "Checking the latest online…"},
+    "response_renderer":   {"icon": "✍️",  "label": "Putting it into words…"},
+    "memory_write":        {"icon": "🧩", "label": "Remembering this for next time…"},
+    "direct_answer":       {"icon": "💬", "label": "On it…"},
+    "error":               {"icon": "😕", "label": "Hit a snag — trying to recover…"},
 }
 
 
