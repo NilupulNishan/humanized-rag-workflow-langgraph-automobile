@@ -43,13 +43,13 @@ JSON schema:
   - Expressions of gratitude: "thank you", "thanks so much", "appreciate it"
   - Confirmations and acknowledgements: "ok", "got it", "makes sense", "understood",
     "that worked", "done", "perfect", "great", "alright"
-  - Pure general knowledge: "what is bluetooth", "what does LED stand for"
+  - Pure general knowledge completely unrelated to cars or vehicles:"what is bluetooth", "what does LED stand for", "who is the national bird of sri lanka","what is the capital of france", "who invented the telephone", "what year did ww2 end"
+  — anything that has NO connection to cars, vehicles, manuals, or automotive topics.
   - Questions about YOU (the assistant): "what can you do", "who are you"
-  - ANY message that contains only social/conversational content with no
-    technical or product-related substance
-  When intent is "general": set expanded_queries=[], needs_clarification=false.
+  - ANY message that contains only social/conversational content with no technical or product-related substance When intent is "general": set expanded_queries=[], needs_clarification=false.
   IMPORTANT: "thank you", "thanks", "ok", "got it" are ALWAYS "general".
-  Never classify pure social messages as "faq" or "followup".
+  IMPORTANT: World knowledge questions about geography, history, animals, science,people, or any non-automotive topic are ALWAYS "general" — never "faq".
+  Never classify pure social messages or world knowledge questions as "faq" or "followup".
 
 "followup" — the user is continuing from the previous turn. Short phrases like
   "what's next", "and then?", "ok done", "what about X" that only make sense
@@ -285,16 +285,36 @@ You have web search results. Synthesise them into a detailed, well-structured an
   - Cite sources naturally inline: "according to ZigWheels" — never paste raw URLs in the text.
   - Never say "based on the search results" or "according to my research" — state facts directly.
   - Never write a generic closing sentence.
-  - If data for one car is missing from the sources, explicitly say 
-  "not available in sources" in the table cell — never use XX or placeholder text.
+  - If data for one car is missing from the sources, explicitly say
+    "not available in sources" in the table cell — never use XX or placeholder text.
   - If your car's specs are missing entirely, add a note after the table:
-    "Note: Full specs for the BIAC X55 weren't available in these sources — 
+    "Note: Full specs for the BIAC X55 weren't available in these sources —
     check the manufacturer's website for exact figures."
+  - Always end your answer with a **Learn more** section followed immediately by a
+    **Sources** section, in this exact format — no exceptions:
+
+    **Learn more:**
+    - [Official BAIC Sri Lanka — BIAC X55](https://www.baicsrilanka.com/models/BAIC%20X55)
+    - [Official BAIC Sri Lanka — BAIC BJ30](https://www.baicsrilanka.com/models/BAIC%20BJ30)
+
+    Show ONLY the link relevant to the car being discussed:
+      - If the question is about the X55 → show only the X55 link.
+      - If the question is about the BJ30 → show only the BJ30 link.
+      - If comparing both → show both links.
+
+    **Sources:**
+    - [source title](source url)
+    - [source title](source url)
+
+    List only the web sources you actually used in your answer.
+    Use the exact titles and URLs from the web content provided to you.
+    Do not invent or guess URLs.
 
 **Never:**
   - Use headers larger than bold text (no # markdown headers).
   - Pad with filler sentences.
   - Leave a section empty.
+  - Skip the Learn more or Sources sections — they are mandatory.
 """
 
 RENDERER_USER = """\
