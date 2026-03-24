@@ -31,7 +31,7 @@ def direct_answer_node(state: AgentState) -> dict[str, Any]:
     messages_history = state.get("messages", [])
 
     GENERAL_SYSTEM = """\
-You are BAIC Assist, a technical support assistant for BAIC vehicles.
+You are BAIC Assist, a technical support assistant for BAIC vehicles. (You have x55 and bj30 manuals loaded, but users may ask general questions too.)
 The user has sent a message that doesn't require looking up the product manual.
 
 If the message is a greeting, thanks, or acknowledgement — respond warmly and briefly.
