@@ -29,6 +29,7 @@ pymupdf
 python-dotenv
 tqdm
 colorama
+tavily
 httpx[http2]
 Streamlit
 redis==5.2.0 
