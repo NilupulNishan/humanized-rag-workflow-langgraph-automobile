@@ -37,6 +37,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     collection: Optional[str] = None
+    language: Optional[str] = "en"
 
 
 class SourceInfo(BaseModel):
@@ -94,6 +95,7 @@ def _run_pipeline(
     user_input:      str,
     session_id:      str,
     collection_name: str | None,
+    language: str = "en", 
     on_node_start=None,   # optional callback(node_name: str)
     on_node_done=None,    # optional callback(node_name: str)
 ) -> dict:
@@ -114,6 +116,7 @@ def _run_pipeline(
         "session_id":      session_id,
         "collection_name": collection_name or "",
         "messages":        [{"role": "user", "content": user_input}],
+        "language": language,
     }
 
     def run_node(name, fn):
@@ -128,8 +131,8 @@ def _run_pipeline(
     # ── Node 1 ────────────────────────────────────────────────────────────
     run_node("query_understanding", query_understanding_node)
 
-    analysis            = state.get("analysis", {}) or {}
-    intent              = analysis.get("intent", "")
+    analysis = state.get("analysis", {}) or {}
+    intent = analysis.get("intent", "")
     needs_clarification = analysis.get("needs_clarification", False)
 
     # ── Route ─────────────────────────────────────────────────────────────
@@ -142,7 +145,7 @@ def _run_pipeline(
 
     elif needs_clarification:
         question = analysis.get("clarification_question",
-            "Could you give me more detail? That'll help me find the right answer.")
+                                "Could you give me more detail? That'll help me find the right answer.")
         state["plan"] = AnswerPlan(
             mode="clarify", confidence=0.0,
             likely_goal=analysis.get("inferred_topic", ""),
@@ -150,8 +153,8 @@ def _run_pipeline(
             citations=[], first_clarifying_question=question,
             escalation_message=None,
         )
-        state["raw_answer"]           = ""
-        state["source_nodes"]         = []
+        state["raw_answer"] = ""
+        state["source_nodes"] = []
         state["retrieval_successful"] = False
 
     else:
@@ -159,9 +162,9 @@ def _run_pipeline(
         run_node("retriever",      retriever_node)
         run_node("answer_planner", answer_planner_node)
 
-        plan        = state.get("plan", {}) or {}
-        mode        = plan.get("mode", "direct")
-        confidence  = plan.get("confidence", 1.0)
+        plan = state.get("plan", {}) or {}
+        mode = plan.get("mode", "direct")
+        confidence = plan.get("confidence", 1.0)
         search_used = state.get("search_used", False)
 
         if not search_used and (
@@ -182,23 +185,25 @@ def _run_pipeline(
 def _extract_sources(state: dict) -> tuple[list[SourceInfo], list[dict]]:
     """Returns (manual_sources, web_sources) from state."""
     source_nodes = state.get("source_nodes", []) or []
-    search_used  = state.get("search_used", False)
+    search_used = state.get("search_used", False)
     manual_sources: list[SourceInfo] = []
-    web_sources:    list[dict]       = []
+    web_sources:    list[dict] = []
 
     for node in source_nodes:
         meta = getattr(node, "metadata", {}) or {}
         if search_used:
-            url   = meta.get("source", "")
+            url = meta.get("source", "")
             title = meta.get("title", url)
             if url:
                 web_sources.append({"url": url, "title": title})
         else:
-            page    = meta.get("page_number") or meta.get("page") or meta.get("page_label")
+            page = meta.get("page_number") or meta.get(
+                "page") or meta.get("page_label")
             section = meta.get("section") or meta.get("header") or ""
             if page:
                 try:
-                    manual_sources.append(SourceInfo(page=int(page), section=section))
+                    manual_sources.append(SourceInfo(
+                        page=int(page), section=section))
                 except (ValueError, TypeError):
                     pass
 
@@ -220,10 +225,11 @@ async def chat_endpoint(request: ChatRequest):
                 user_input=request.message,
                 session_id=session_id,
                 collection_name=request.collection,
+                language=request.language or "en",
             )
         )
 
-        plan                        = state.get("plan", {}) or {}
+        plan = state.get("plan", {}) or {}
         manual_sources, web_sources = _extract_sources(state)
 
         return ChatResponse(
@@ -276,9 +282,10 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
         while True:
             raw = await websocket.receive_text()
             try:
-                data       = json.loads(raw)
+                data = json.loads(raw)
                 user_input = data.get("message", "").strip()
                 collection = data.get("collection")
+                language = data.get("language", "en")
             except json.JSONDecodeError:
                 user_input = raw.strip()
                 collection = None
@@ -292,6 +299,7 @@ async def websocket_chat(websocket: WebSocket, session_id: str):
                     user_input=user_input,
                     session_id=session_id,
                     collection_name=collection,
+                    language=language,
                 )
             except Exception as e:
                 logger.error(f"WS handler error: {e}")
@@ -308,6 +316,7 @@ async def _handle_ws_message(
     user_input:      str,
     session_id:      str,
     collection_name: str | None,
+    language:  str = "en", 
 ):
     import asyncio
     from agent.nodes.response_renderer import response_renderer_stream
@@ -345,6 +354,7 @@ async def _handle_ws_message(
             user_input=user_input,
             session_id=session_id,
             collection_name=collection_name,
+            language=language, 
             on_node_start=on_node_start,
             on_node_done=on_node_done,
         )
@@ -412,7 +422,7 @@ def slugify_filename(name: str) -> str:
 async def list_collections():
     try:
         pdf_dir = Path("data/pdfs")
-        items   = []
+        items = []
         for pdf_file in pdf_dir.glob("*.pdf"):
             collection_id = slugify_filename(pdf_file.name)
             items.append({

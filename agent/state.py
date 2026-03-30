@@ -82,6 +82,7 @@ class AgentState(TypedDict, total=False):
     user_input: str                    # raw user message this turn
     collection_name: str               # which PDF collection to query
     session_id: str                    # thread identifier for checkpointer
+    language: str   # "en" | "si" | "ta"
  
     # ── Query understanding output
     analysis: QueryAnalysis
