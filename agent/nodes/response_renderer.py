@@ -32,9 +32,9 @@ from langchain_openai import AzureChatOpenAI
 
 from agent.state import AgentState, AnswerPlan
 from agent.prompts.system_prompt import RENDERER_PROMPTS, RENDERER_USER
+from agent.constants.languages import DEFAULT_LANGUAGE_CODE, get_selected_language
 
 logger = logging.getLogger(__name__)
-
 
 def _get_llm(mode: str) -> AzureChatOpenAI:
     from config import settings
@@ -56,11 +56,30 @@ def response_renderer_node(state: AgentState) -> dict[str, Any]:
     user_input  = state.get("user_input", "")
     session     = state.get("session")
     analysis    = state.get("analysis", {})
+    
+    language = state.get("language", "en")
+
+    LANG_MAP = {
+        "en": "English",
+        "si": "Sinhala",
+        "ta": "Tamil"
+    }
+
+    selected_lang = LANG_MAP.get(language, "English")
 
     mode = plan.get("mode", "direct") if plan else "direct"
 
     # ── Select system prompt based on mode ────────────────────────────────
-    system_prompt = RENDERER_PROMPTS.get(mode, RENDERER_PROMPTS["direct"])
+    base_prompt = RENDERER_PROMPTS.get(mode, RENDERER_PROMPTS["direct"])
+
+    language_rule = f"""
+    CRITICAL LANGUAGE RULE:
+    - Always respond ONLY in {selected_lang}
+    - Even if user input is in another language, DO NOT respond in that language
+    - Do NOT mix multiple languages
+    """
+
+    system_prompt = base_prompt + "\n" + language_rule
 
     # ── Build session context ──────────────────────────────────────────────
     session_context = ""
@@ -143,9 +162,21 @@ def response_renderer_stream(state: AgentState):
     plan       = state.get("plan", {})
     user_input = state.get("user_input", "")
     session    = state.get("session")
+    
+    language = state.get("language", DEFAULT_LANGUAGE_CODE)
+    selected_lang = get_selected_language(language)
 
     mode = plan.get("mode", "direct") if plan else "direct"
-    system_prompt = RENDERER_PROMPTS.get(mode, RENDERER_PROMPTS["direct"])
+    base_prompt = RENDERER_PROMPTS.get(mode, RENDERER_PROMPTS["direct"])
+
+    language_rule = f"""
+    CRITICAL LANGUAGE RULE:
+    - Always respond ONLY in {selected_lang}
+    - Even if user input is in another language, DO NOT respond in that language
+    - Do NOT mix multiple languages
+    """
+
+    system_prompt = base_prompt + "\n" + language_rule
 
     session_context = ""
     if session:

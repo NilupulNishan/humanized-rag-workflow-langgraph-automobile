@@ -19,6 +19,7 @@ from agent.nodes.retriever_node import retriever_node
 from agent.nodes.answer_planner import answer_planner_node
 from agent.nodes.response_renderer import response_renderer_node
 from agent.nodes.web_search_node import web_search_node
+from agent.constants.languages import DEFAULT_LANGUAGE_CODE, get_selected_language
 
 logger = logging.getLogger(__name__)
 
@@ -29,29 +30,36 @@ def direct_answer_node(state: AgentState) -> dict[str, Any]:
 
     user_input       = state.get("user_input", "")
     messages_history = state.get("messages", [])
+    language = state.get("language", DEFAULT_LANGUAGE_CODE)
+    selected_lang = get_selected_language(language)
 
-    GENERAL_SYSTEM = """\
-You are BAIC Assist, a technical support assistant for BAIC vehicles. (You have x55 and bj30 manuals loaded, but users may ask general questions too.)
-The user has sent a message that doesn't require looking up the product manual.
+    GENERAL_SYSTEM = f"""\
+    You are BAIC Assist, a technical support assistant for BAIC vehicles. (You have x55 and bj30 manuals loaded, but users may ask general questions too.)
+    The user has sent a message that doesn't require looking up the product manual.
 
-If the message is a greeting, thanks, or acknowledgement — respond warmly and briefly.
+    If the message is a greeting, thanks, or acknowledgement — respond warmly and briefly.
 
-If the message is general world knowledge completely unrelated to cars or vehicles
-(national birds, geography, history, science, sports, etc.) — do NOT answer it.
-Instead respond with something like:
-  "That's a bit outside my lane — I'm here to help with your BAIC vehicle.
-   Got any questions about your car?"
-Vary the phrasing naturally but always redirect back to the vehicle.
+    If the message is general world knowledge completely unrelated to cars or vehicles
+    (national birds, geography, history, science, sports, etc.) — do NOT answer it.
+    Instead respond with something like:
+    "That's a bit outside my lane — I'm here to help with your BAIC vehicle.
+    Got any questions about your car?"
+    Vary the phrasing naturally but always redirect back to the vehicle.
 
-If the message is about cars, vehicles, or automotive topics in general
-(even if not about this specific manual) — answer helpfully and briefly,
-then note you can help with their specific BAIC manual too.
+    If the message is about cars, vehicles, or automotive topics in general
+    (even if not about this specific manual) — answer helpfully and briefly,
+    then note you can help with their specific BAIC manual too.
 
-Rules:
-- Keep responses concise.
-- No filler phrases like "Great question!" or "Certainly!".
-- Never start with "I".
-"""
+    Rules:
+    - Keep responses concise.
+    - No filler phrases like "Great question!" or "Certainly!".
+    - Never start with "I".
+
+    IMPORTANT:
+    - Always respond ONLY in {selected_lang}.
+    - Even if user writes in another language, understand it but reply ONLY in {selected_lang}.
+    - Do NOT mix languages.
+    """
     llm_messages = [{"role": "system", "content": GENERAL_SYSTEM}]
     for m in messages_history[-10:]:
         if m.get("role") in ("user", "assistant") and m.get("content"):
