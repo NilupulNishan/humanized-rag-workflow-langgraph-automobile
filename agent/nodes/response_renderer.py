@@ -32,6 +32,7 @@ from langchain_openai import AzureChatOpenAI
 
 from agent.state import AgentState, AnswerPlan
 from agent.prompts.system_prompt import RENDERER_PROMPTS, RENDERER_USER
+from agent.constants.languages import DEFAULT_LANGUAGE_CODE, get_selected_language
 
 logger = logging.getLogger(__name__)
 
@@ -162,15 +163,8 @@ def response_renderer_stream(state: AgentState):
     user_input = state.get("user_input", "")
     session    = state.get("session")
     
-    language = state.get("language", "en")
-
-    LANG_MAP = {
-        "en": "English",
-        "si": "Sinhala",
-        "ta": "Tamil"
-    }
-
-    selected_lang = LANG_MAP.get(language, "English")
+    language = state.get("language", DEFAULT_LANGUAGE_CODE)
+    selected_lang = get_selected_language(language)
 
     mode = plan.get("mode", "direct") if plan else "direct"
     base_prompt = RENDERER_PROMPTS.get(mode, RENDERER_PROMPTS["direct"])

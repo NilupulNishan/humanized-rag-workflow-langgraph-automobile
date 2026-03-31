@@ -19,6 +19,7 @@ from agent.nodes.retriever_node import retriever_node
 from agent.nodes.answer_planner import answer_planner_node
 from agent.nodes.response_renderer import response_renderer_node
 from agent.nodes.web_search_node import web_search_node
+from agent.constants.languages import DEFAULT_LANGUAGE_CODE, get_selected_language
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +30,8 @@ def direct_answer_node(state: AgentState) -> dict[str, Any]:
 
     user_input       = state.get("user_input", "")
     messages_history = state.get("messages", [])
-    lang_map = {
-    "en": "English",
-    "si": "Sinhala",
-    "ta": "Tamil"
-    }
-
-    selected_lang = lang_map.get(state.get("language", "en"), "English")
+    language = state.get("language", DEFAULT_LANGUAGE_CODE)
+    selected_lang = get_selected_language(language)
 
     GENERAL_SYSTEM = f"""\
     You are BAIC Assist, a technical support assistant for BAIC vehicles. (You have x55 and bj30 manuals loaded, but users may ask general questions too.)
